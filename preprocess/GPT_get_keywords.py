@@ -81,11 +81,11 @@ def save_to_file(answer, file_path):
 
 def main():
     client = OpenAI(
-        api_key='insert_your_api_key_here'  # Replace with your actual API key
+        # api_key='insert_your_api_key_here'  # Replace with your actual API key
+        api_key = "your_openai_api_key_here"
     )
 
     parser = argparse.ArgumentParser()
-    # parser.add_argument('--version', type=str, default='v2', help="版本号，用于生成文件名")
     parser.add_argument('--city', type=str, default='Beijing', help="City: 'Shanghai' or 'Beijing'")
     parser.add_argument('--template', type=str, default='keywords_kmeans', help="Template type: 'keywords_kmeans'")
     parser.add_argument('--dataset', type=str, default='Gaode', help="Datasets from Meituan, Gaode")

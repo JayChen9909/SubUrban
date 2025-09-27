@@ -596,12 +596,7 @@ def main():
             gdp_indices_within_radius = gdp_tree.query_ball_point(region_centroid, radius + gdp_cell_size)
             region_gdp = 0.0
             
-            # Debug: Count total GDP cells found within radius for this region
-            # if idx % 500 == 0:  # Only print for every 500th region to avoid too much output
-            #     print(f"Region {idx}: centroid={region_centroid}, radius={radius}, found {len(gdp_indices_within_radius)} GDP points within radius")
-            #     if len(gdp_indices_within_radius) > 0:
-            #         gdp_points = [gdp_locations[i] for i in gdp_indices_within_radius[:3]]
-            #         print(f"  Sample GDP points: {gdp_points}")
+
             
             gdp_cells_intersecting = 0  # Count intersecting cells for debugging
             
@@ -636,9 +631,7 @@ def main():
                         # Add the proportional GDP value based on the intersection area
                         region_gdp += gdp_value * area_ratio
             
-            # Debug: Report regions with GDP
-            if gdp_cells_intersecting > 0 and idx % 500 == 0:
-                print(f"Region {idx}: {gdp_cells_intersecting} GDP cells intersect, total GDP: {region_gdp:.2f}")
+
             
             # 计算区域面积
             region_area = area_dict[idx]
@@ -651,9 +644,7 @@ def main():
             road_region_data[idx]['gdp'] = region_gdp
             road_region_data[idx]['gdp_density'] = gdp_density
             
-            # Debug: Print GDP density for some regions
-            if gdp_cells_intersecting > 0 and idx % 500 == 0:
-                print(f"  Region {idx} area: {region_area:.2f}, GDP: {region_gdp:.2f}百万元, GDP density: {gdp_density:.2f}百万元/平方千米")
+
         
         # svi_indices_within_radius = svi_tree.query_ball_point(region_centroid, radius)
         # for svi_index in svi_indices_within_radius:
@@ -727,8 +718,7 @@ def main():
         
         print(f"Number of road regions without any GDP data: {count_no_gdp}")
         print(f"Number of road regions without any GDP density data: {count_no_gdp_density}")
-        print(f"Total GDP sum across all road regions: {total_gdp:.4f} (百万元)")
-        print(f"Average GDP density across all road regions: {total_gdp_density/len(road_region_data):.2f} (百万元/平方千米)")
+
         
         # Add debug information about GDP data
         if len(gdp_locations) > 0:
@@ -740,8 +730,7 @@ def main():
         
         # Get statistics for non-zero GDP density
         gdp_density_values = [data['gdp_density'] for data in road_region_data.values() if data['gdp_density'] > 0]
-        if gdp_density_values:
-            print(f"GDP density statistics - Min: {min(gdp_density_values):.2f}, Max: {max(gdp_density_values):.2f}, Mean: {sum(gdp_density_values)/len(gdp_density_values):.2f} (百万元/平方千米)")
+
         
         # Only calculate average if there are regions with GDP
         if regions_with_gdp > 0:
@@ -772,7 +761,7 @@ def main():
                 'landuse_level1_distribution': data['label_distribution'], # Save the label distribution
                 'population': population_dict.get(idx, 0), # Save the population of each road region
                 'house_price': data['average_house_price'], # Save the house information
-                'gdp': data['gdp_density'], # Save the calculated GDP density value (百万元/平方千米)
+                'gdp': data['gdp_density'], # Save the calculated GDP density value
                 }
     # Search in check_region data and find those regions not in region_data, add those region into region_data
     if poi_mode == 'filtered':

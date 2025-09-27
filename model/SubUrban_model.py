@@ -934,12 +934,14 @@ def rl_expand_region_with_dynamic_threshold(sg, region_shape, candidate_buffer, 
 
 def get_llm_analysis(current_summary_path, global_history_path, previous_analyses, llm_type='GPT'):
     if llm_type == 'GPT':
-        api_key = "insert-your-gpt-api-key-here"
+        # api_key = "insert-your-gpt-api-key-here"
+        api_key = "your_openai_api_key_here"
         base_url = None
         model_name = "gpt-4.1"
     elif llm_type == 'DeepSeek':
         base_url = "https://api.deepseek.com/v1" 
-        api_key = "insert-your-deepseek-api-key-here"
+        # api_key = "insert-your-deepseek-api-key-here"
+        api_key = "your_openai_api_key_here"
         model_name = "deepseek-reasoner" 
     else:
         print("LLM choices are only GPT or DeepSeek.")
@@ -1531,10 +1533,6 @@ def train_rl_rounds_with_triple_task_weights(subgraphs, train_ids, region_gnn, p
     norm_mean_all, norm_std_all = compute_norm_stats(subgraphs, poi_categories, train_ids)
     norm_mean_12 = torch.tensor(norm_mean_all[:2], dtype=torch.float32).to(device)
     norm_std_12 = torch.tensor(norm_std_all[:2], dtype=torch.float32).to(device)
-    initial_results_no_weights = compute_triple_task_r2(subgraphs, train_ids, use_weights=False,
-                                                      category_weights=None, poi_categories=poi_categories)
-    initial_mixed_no_weights = population_weight * initial_results_no_weights['population_r2'] + housing_weight * initial_results_no_weights['housing_r2'] + gdp_weight * initial_results_no_weights['gdp_r2']
-    
     initial_results_with_weights = compute_triple_task_r2(subgraphs, train_ids, use_weights=True,
                                                         category_weights=category_weights, poi_categories=poi_categories)
     initial_mixed_with_weights = population_weight * initial_results_with_weights['population_r2'] + housing_weight * initial_results_with_weights['housing_r2'] + gdp_weight * initial_results_with_weights['gdp_r2']
@@ -1553,7 +1551,6 @@ def train_rl_rounds_with_triple_task_weights(subgraphs, train_ids, region_gnn, p
     region0_sat_after = None
     epsilon = 1e-8
 
-    current_mixed_no_weights = initial_mixed_no_weights
     current_mixed_with_weights = initial_mixed_with_weights
 
     reward_history['mixed_reward'].append(initial_mixed_with_weights)
@@ -1800,22 +1797,13 @@ def train_rl_rounds_with_triple_task_weights(subgraphs, train_ids, region_gnn, p
     
     train_duration = time.time() - start_time
     
-    final_results_no_weights = compute_triple_task_r2(subgraphs, train_ids, use_weights=False,
-                                                    category_weights=None, poi_categories=poi_categories)
-    final_mixed_no_weights = population_weight * final_results_no_weights['population_r2'] + housing_weight * final_results_no_weights['housing_r2'] + gdp_weight * final_results_no_weights['gdp_r2']
-    
     final_results_with_weights = compute_triple_task_r2(subgraphs, train_ids, use_weights=True,
                                                       category_weights=category_weights, poi_categories=poi_categories)
     final_mixed_with_weights = population_weight * final_results_with_weights['population_r2'] + housing_weight * final_results_with_weights['housing_r2'] + gdp_weight * final_results_with_weights['gdp_r2']
     
     print(f"\nFinal training set evaluation:")
-    print("Without weights:")
-    print_triple_task_results(final_results_no_weights, "  ")
-    print(f"  Mixed reward = {final_mixed_no_weights:.4f}")
-    print("With weights:")
     print_triple_task_results(final_results_with_weights, "  ")
     print(f"  Mixed reward = {final_mixed_with_weights:.4f}")
-    print(f"Mixed reward improvement: {(final_mixed_with_weights - final_mixed_no_weights) / final_mixed_no_weights * 100:.2f}%")
     return subgraphs, norm_mean_12, norm_std_12
 
 def compute_triple_task_r2(subgraphs, region_ids, use_weights=False, category_weights=None, poi_categories=None):
@@ -2311,6 +2299,7 @@ def test_openai_api(llm_type='GPT'):
     print(f"Testing {llm_type} API connection...")
     try:
         if llm_type == 'GPT':
+            # api_key = "your_openai_api_key_here"
             api_key = "your_openai_api_key_here"
             client = openai.OpenAI(api_key=api_key)
             response = client.chat.completions.create(
@@ -2321,7 +2310,8 @@ def test_openai_api(llm_type='GPT'):
             result = response.choices[0].message.content
             print(f"GPT API test successful! Response: {result}")
         elif llm_type == 'DeepSeek':
-            api_key = "your_deepseek_api_key_here"
+            # api_key = "your_deepseek_api_key_here"
+            api_key = "your_openai_api_key_here"
             client = openai.OpenAI(
                 api_key=api_key,
                 base_url="https://api.deepseek.com/v1"

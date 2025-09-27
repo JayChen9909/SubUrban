@@ -18,6 +18,7 @@ echo "Working directory: $(pwd)"
 # Step 1: Run preprocessing
 echo "Step 1: Running preprocessing..."
 python ./preprocess/preprocess.py --city "$CITY"
+# CUDA_VISIBLE_DEVICES=5 python ./baselines/BERT/BERT_encode.py --city "$CITY" --mode original
 if [ $? -ne 0 ]; then
     echo "Error: Preprocessing failed"
     exit 1
@@ -42,7 +43,7 @@ fi
 # Step 4: Re-scan and Re-encode for filtered POIs
 echo "Step 4: Re-scan and Re-encode for filtered POIs..."
 python ./preprocess/preprocess.py --city "$CITY" --poi_mode filtered
-python ./baselines/BERT/BERT_encode.py --city "$CITY" --mode filtered
+CUDA_VISIBLE_DEVICES=5 python ./baselines/BERT/BERT_encode.py --city "$CITY" --mode filtered
 if [ $? -ne 0 ]; then
     echo "Error: Re-scan and Re-encode failed"
     exit 1
@@ -50,7 +51,7 @@ fi
 
 # Step 5: Run SubUrban model
 echo "Step 5: Running SubUrban model..."
-python ./model/SubUrban_model.py --city "$CITY"
+CUDA_VISIBLE_DEVICES=5 python ./model/SubUrban_model.py --city "$CITY" --rl_rounds 1 --cem_iterations 1  
 if [ $? -ne 0 ]; then
     echo "Error: SubUrban model failed"
     exit 1
