@@ -106,7 +106,7 @@ def get_suburban_dir():
     return os.path.dirname(script_dir)
 
 def city_abbr(city):
-    return 'BJ' if city == 'Beijing' else 'SH' if city == 'Shanghai' else None
+    return 'BJ' if city == 'Beijing' else 'SH' if city == 'Shanghai' else 'SG' if city == 'Singapore' else 'NYC' if city == 'NYC' else None
 
 def load_poi_categories(poi_txt):
     categories = []
@@ -934,14 +934,12 @@ def rl_expand_region_with_dynamic_threshold(sg, region_shape, candidate_buffer, 
 
 def get_llm_analysis(current_summary_path, global_history_path, previous_analyses, llm_type='GPT'):
     if llm_type == 'GPT':
-        # api_key = "insert-your-gpt-api-key-here"
-        api_key = "your_openai_api_key_here"
+        api_key = "insert-your-gpt-api-key-here"
         base_url = None
         model_name = "gpt-4.1"
     elif llm_type == 'DeepSeek':
         base_url = "https://api.deepseek.com/v1" 
-        # api_key = "insert-your-deepseek-api-key-here"
-        api_key = "your_openai_api_key_here"
+        api_key = "insert-your-deepseek-api-key-here"
         model_name = "deepseek-reasoner" 
     else:
         print("LLM choices are only GPT or DeepSeek.")
@@ -1240,6 +1238,257 @@ def apply_llm_suggestions(cem, llm_analysis):
     
     return applied_changes
 
+def optimize_category_weights_with_cem_city_adaptive(subgraphs, train_ids, region_gnn, projection_layer, 
+                                   large_graph, poi_locations, poi_tree, poi_categories, 
+                                   device, candidate_attention, expand_steps=5, fixed_buffer=200.0, 
+                                   n_iterations=20, n_samples=50, cem_samples=10, 
+                                   population_weight=0.33, housing_weight=0.33, gdp_weight=0.34, city=None, rl_topk=10,llm_type=None, llm_instruct=True):
+    
+    # Determine if city uses single-task (population only) or triple-task reward
+    is_single_task = city in ['Singapore', 'NYC']
+    
+    if is_single_task:
+        print(f"\n--- Optimizing {len(set(poi_categories))} POI category weights using CEM (single-task population R² signal) for {city} ---")
+        return optimize_category_weights_with_cem_single_task(subgraphs, train_ids, region_gnn, projection_layer,
+                                                            large_graph, poi_locations, poi_tree, poi_categories,
+                                                            device, candidate_attention, expand_steps, fixed_buffer,
+                                                            n_iterations, n_samples, cem_samples, city, rl_topk, llm_type, llm_instruct)
+    else:
+        print(f"\n--- Optimizing {len(set(poi_categories))} POI category weights using CEM (triple-task R² mixed signal) for {city} ---")
+        return optimize_category_weights_with_cem_triple_task(subgraphs, train_ids, region_gnn, projection_layer,
+                                                            large_graph, poi_locations, poi_tree, poi_categories,
+                                                            device, candidate_attention, expand_steps, fixed_buffer,
+                                                            n_iterations, n_samples, cem_samples, 
+                                                            population_weight, housing_weight, gdp_weight, city, rl_topk, llm_type, llm_instruct)
+
+def optimize_category_weights_with_cem_single_task(subgraphs, train_ids, region_gnn, projection_layer, 
+                                   large_graph, poi_locations, poi_tree, poi_categories, 
+                                   device, candidate_attention, expand_steps=5, fixed_buffer=200.0, 
+                                   n_iterations=20, n_samples=50, cem_samples=10, 
+                                   city=None, rl_topk=10, llm_type=None, llm_instruct=True):
+    start_time = time.time()
+    region_gnn.eval()
+    projection_layer.eval()
+    candidate_attention.eval()
+    
+    unique_categories = sorted(set(poi_categories))
+    n_categories = len(unique_categories)
+    category_to_idx = {cat: i for i, cat in enumerate(unique_categories)}
+    
+    print(f"Population task only for {city}")
+    print(f"Fixed expansion steps: {expand_steps}, Fixed expansion distance: {fixed_buffer}m")
+    print(f"CEM iterations: {n_iterations}, samples per round: {n_samples}")
+    print(f"Early stopping: stop when population reward change < 0.001 for 4 consecutive rounds")
+    
+    cem = CEMOptimizer(
+        n_categories=n_categories,
+        category_names=unique_categories,
+        elite_fraction=0.15,
+        smoothing_factor=0.6,
+        min_weight=1.0,
+        max_weight=2.0
+    )
+    
+    early_stop_threshold = 0.001 
+    early_stop_patience = 3 
+    reward_history = []         
+    no_improvement_count = 0  
+    early_stopped = False        
+        
+    if llm_instruct:
+        if city is None:
+            raise ValueError("City parameter must be specified when LLM guidance is enabled")
+        if llm_type is None:
+            raise ValueError("llm_type parameter must be specified when LLM guidance is enabled")
+            
+        suburban_dir = get_suburban_dir()
+        llm_folder = os.path.join(suburban_dir, 'tmp', city, llm_type)
+        os.makedirs(llm_folder, exist_ok=True)
+        
+        global_history_path = os.path.join(llm_folder, f'cem_global_history_single_task_sample{cem_samples}_{n_iterations}_allTest.txt')
+        with open(global_history_path, 'w') as f: 
+            f.write("=== CEM Optimization Global History (Single-Task Population) ===\n\n")
+        
+        llm_analyses = []
+        print(f"LLM type: {llm_type}")
+        print(f"LLM analysis files will be saved to: {llm_folder}")
+    else:
+        llm_folder = None
+        global_history_path = None
+        llm_analyses = None
+        print("Will execute pure CEM optimization without LLM guidance")
+
+    # Execute CEM iterations
+    for iteration in range(n_iterations):
+        print(f"\nCEM iteration {iteration+1}/{n_iterations}")        
+    
+        sampled_weights_arr = cem.sample_weights(n_samples)
+        rewards = []
+        
+        for sample_idx, weights_arr in enumerate(sampled_weights_arr):
+            category_weights = {unique_categories[i]: weights_arr[i] for i in range(n_categories)}
+            
+            temp_subgraphs = copy.deepcopy(subgraphs)
+            for region_id in train_ids:
+                sg, region_shape, region_info = temp_subgraphs[region_id]
+                orig_buffer = region_info['buffer']
+                region_info['buffer'] = fixed_buffer
+                current_sg = sg
+                for step in range(expand_steps):
+                    current_sg, _, _, _, _ = rl_expand_region(current_sg, region_shape, region_info['buffer'],
+                                                            rl_topk, region_gnn, large_graph, poi_locations, poi_tree,
+                                                            projection_layer, candidate_attention, is_training=False,
+                                                            poi_categories=poi_categories, category_weights=category_weights)
+                    current_sg = update_connectivity(current_sg, poi_locations)
+                
+                temp_subgraphs[region_id] = (current_sg, region_shape, region_info)
+                region_info['buffer'] = orig_buffer
+
+            population_results = compute_population_r2(temp_subgraphs, train_ids, use_weights=True,
+                                                     category_weights=category_weights, poi_categories=poi_categories)
+        
+            population_r2 = population_results['population_r2']
+            rewards.append(population_r2)
+            
+            if (sample_idx + 1) % 10 == 0 or sample_idx == n_samples - 1:
+                print(f"  Samples {sample_idx+1}/{n_samples}: Population R²={population_r2:.4f}")
+
+        best_weights, best_reward = cem.update_distribution(sampled_weights_arr, np.array(rewards), iteration)
+
+        current_round_best_idx = np.argmax(rewards)
+        current_round_best_reward = rewards[current_round_best_idx]
+        print(f"Iteration {iteration+1} current round best reward: {current_round_best_reward:.4f}")
+        print(f"Iteration {iteration+1} historical best weights current performance: {best_reward:.4f}")
+
+        reward_history.append(best_reward)
+
+        if len(reward_history) >= 4:
+            reward_change = reward_history[-1] - reward_history[-2]
+            
+            if reward_change < early_stop_threshold:
+                no_improvement_count += 1
+            else:
+                no_improvement_count = 0
+            
+            if no_improvement_count >= early_stop_patience:
+                print(f"Early stopping at iteration {iteration+1} due to convergence")
+                early_stopped = True
+                break
+
+        best_category_weights = {unique_categories[i]: best_weights[i] for i in range(n_categories)}
+
+        temp_subgraphs_best = copy.deepcopy(subgraphs)
+        for region_id in train_ids:
+            sg, region_shape, region_info = temp_subgraphs_best[region_id]
+            orig_buffer = region_info['buffer']
+            region_info['buffer'] = fixed_buffer
+            
+            current_sg = sg
+            for step in range(expand_steps):
+                current_sg, _, _, _, _ = rl_expand_region(current_sg, region_shape, region_info['buffer'],
+                                                        rl_topk, region_gnn, large_graph, poi_locations, poi_tree,
+                                                        projection_layer, candidate_attention, is_training=False,
+                                                        poi_categories=poi_categories, category_weights=best_category_weights)
+                current_sg = update_connectivity(current_sg, poi_locations)
+            
+            temp_subgraphs_best[region_id] = (current_sg, region_shape, region_info)
+            region_info['buffer'] = orig_buffer
+        
+        best_population_results = compute_population_r2(temp_subgraphs_best, train_ids, use_weights=True,
+                                                        category_weights=best_category_weights, poi_categories=poi_categories)
+        
+        print("Top 10 category weights from historical best sample:")
+        sorted_cats = sorted(best_category_weights.items(), key=lambda x: x[1], reverse=True)[:10]
+        for cat, weight in sorted_cats:
+            print(f"  {cat}: {weight:.4f}")
+
+        if early_stopped:
+            break
+        if llm_instruct:
+            if (iteration + 1) % 3 == 0:
+                print(f"\n=== Round {iteration+1}: LLM Analysis and Parameter Adjustment ===")
+                current_summary_path = os.path.join(llm_folder, f'cem_summary_round_{iteration+1}_single_task.txt')
+                cem.summarize_training_info(max(0, iteration-2), iteration, current_summary_path)
+                
+                llm_analysis = get_llm_analysis(current_summary_path, global_history_path, llm_analyses, llm_type)
+                llm_analyses.append(llm_analysis)
+                
+                print("LLM Analysis:")
+                print(llm_analysis['analysis'][:500] + "..." if len(llm_analysis['analysis']) > 500 else llm_analysis['analysis'])
+                
+                if llm_analysis['suggestions']:
+                    applied_changes = apply_llm_suggestions(cem, llm_analysis)
+                    print(f"Applied {len(applied_changes)} LLM suggestions")
+                
+                with open(global_history_path, 'a') as f:
+                    f.write(f"\n\n=== Round {iteration+1} Analysis Summary ===\n")
+                    f.write(llm_analysis['analysis'])
+                    f.write(f"\n\nApplied Changes:\n{llm_analysis['applied_changes']}\n")
+        else:
+            print("LLM guidance disabled")
+    
+    print("\n=== CEM Optimization Complete (Single-Task Population) ===")
+    if early_stopped:
+        print(f"Optimization ended at round {iteration+1} through early stopping mechanism")
+        print(f"Best population reward: {cem.best_reward:.4f}")
+        print(f"Reward history: {[f'{r:.4f}' for r in reward_history]}")
+    else:
+        print(f"Completed all {n_iterations} iterations")
+        print(f"Best population reward: {cem.best_reward:.4f}")
+    
+    optimized_weights = {unique_categories[i]: cem.best_weights[i] for i in range(n_categories)}
+    
+    temp_subgraphs_final = copy.deepcopy(subgraphs)
+    for region_id in train_ids:
+        sg, region_shape, region_info = temp_subgraphs_final[region_id]
+        orig_buffer = region_info['buffer']
+        region_info['buffer'] = fixed_buffer
+        
+        current_sg = sg
+        for step in range(expand_steps):
+            current_sg, _, _, _, _ = rl_expand_region(current_sg, region_shape, region_info['buffer'],
+                                                    rl_topk, region_gnn, large_graph, poi_locations, poi_tree,
+                                                    projection_layer, candidate_attention, is_training=False,
+                                                    poi_categories=poi_categories, category_weights=optimized_weights)
+            current_sg = update_connectivity(current_sg, poi_locations)
+        
+        temp_subgraphs_final[region_id] = (current_sg, region_shape, region_info)
+        region_info['buffer'] = orig_buffer
+    
+    final_population_results = compute_population_r2(temp_subgraphs_final, train_ids, use_weights=True,
+                                            category_weights=optimized_weights, poi_categories=poi_categories)
+    
+    print(f"Final best results:")
+    print(f"  Population R² = {final_population_results['population_r2']:.4f} ± {final_population_results['population_r2_std']:.4f}")
+    print(f"  Population MAE = {final_population_results['population_mae']:.4f} ± {final_population_results['population_mae_std']:.4f}")
+    print(f"  Population RMSE = {final_population_results['population_rmse']:.4f} ± {final_population_results['population_rmse_std']:.4f}")
+    
+    cem_duration = time.time() - start_time
+    print(f"\nCEM optimization total time: {cem_duration:.2f}s ({cem_duration/60:.2f}min)")
+    
+    suburban_dir = get_suburban_dir()
+    if llm_instruct:
+        save_path = os.path.join(suburban_dir, 'tmp', city, f'optimized_category_weights_single_task_{llm_type}.pkl')
+    else:
+        save_path = os.path.join(suburban_dir, 'tmp', city, 'optimized_category_weights_single_task_noLLM.pkl') 
+
+    with open(save_path, 'wb') as f:
+        pkl.dump({
+            'optimized_weights': optimized_weights,
+            'best_reward': cem.best_reward,
+            'reward_history': reward_history,
+            'final_results': final_population_results,
+            'cem_params': {
+                'n_iterations': n_iterations,
+                'n_samples': n_samples,
+                'expand_steps': expand_steps,
+                'fixed_buffer': fixed_buffer
+            }
+        }, f)
+    print(f"Optimized category weights saved to: {save_path}")
+    
+    return optimized_weights
+
 def optimize_category_weights_with_cem_triple_task(subgraphs, train_ids, region_gnn, projection_layer, 
                                    large_graph, poi_locations, poi_tree, poi_categories, 
                                    device, candidate_attention, expand_steps=5, fixed_buffer=200.0, 
@@ -1474,7 +1723,7 @@ def optimize_category_weights_with_cem_triple_task(subgraphs, train_ids, region_
                                             category_weights=optimized_weights, poi_categories=poi_categories)
     
     print(f"Final best results:")
-    print_triple_task_results(final_triple_results, "  ")
+    print_triple_task_results(final_triple_results, "    ")
     print(f"  Mixed reward = {cem.best_reward:.4f}")
     
     cem_duration = time.time() - start_time
@@ -1504,6 +1753,279 @@ def optimize_category_weights_with_cem_triple_task(subgraphs, train_ids, region_
     
     return optimized_weights
 
+
+def train_rl_rounds_with_city_adaptive_weights(subgraphs, train_ids, region_gnn, projection_layer, buffer_controller,
+                    large_graph, poi_locations, poi_tree, rl_topk, rl_rounds, poi_categories, device, 
+                    candidate_attention, category_weights, city=None, population_weight=0.33, housing_weight=0.33, gdp_weight=0.34,
+                    w1=1, w2=1, early_rounds=7, threshold_strategy='dynamic_adaptive'):
+    
+    # Determine if city uses single-task or triple-task evaluation
+    is_single_task = city in ['Singapore', 'NYC']
+    
+    if is_single_task:
+        print(f"\n--- Training RL rounds with single-task population reward for {city} ---")
+        return train_rl_rounds_with_single_task_weights(subgraphs, train_ids, region_gnn, projection_layer, buffer_controller,
+                                                      large_graph, poi_locations, poi_tree, rl_topk, rl_rounds, poi_categories, device,
+                                                      candidate_attention, category_weights, w1, w2, early_rounds, threshold_strategy)
+    else:
+        print(f"\n--- Training RL rounds with triple-task mixed reward for {city} ---")
+        return train_rl_rounds_with_triple_task_weights(subgraphs, train_ids, region_gnn, projection_layer, buffer_controller,
+                                                       large_graph, poi_locations, poi_tree, rl_topk, rl_rounds, poi_categories, device,
+                                                       candidate_attention, category_weights, population_weight, housing_weight, gdp_weight,
+                                                       w1, w2, early_rounds, threshold_strategy)
+
+def train_rl_rounds_with_single_task_weights(subgraphs, train_ids, region_gnn, projection_layer, buffer_controller,
+                    large_graph, poi_locations, poi_tree, rl_topk, rl_rounds, poi_categories, device, 
+                    candidate_attention, category_weights, w1=1, w2=1, early_rounds=7, threshold_strategy='dynamic_adaptive'):
+    start_time = time.time()
+
+    optimizer_buffer = torch.optim.Adam(buffer_controller.parameters(), lr=0.001)
+    optimizer_multihead = torch.optim.Adam(candidate_attention.parameters(), lr=0.001)
+    optimizer_gnn_proj = torch.optim.Adam(
+        list(region_gnn.parameters()) + list(projection_layer.parameters()),
+        lr=0.001
+    )
+    
+    reward_history = {
+        'delta_r2': [],     
+        'delta_buffer': [], 
+        'population_reward': []   
+    }
+    min_history_length = 3  
+    norm_mean_all, norm_std_all = compute_norm_stats(subgraphs, poi_categories, train_ids)
+    norm_mean_12 = torch.tensor(norm_mean_all[:2], dtype=torch.float32).to(device)
+    norm_std_12 = torch.tensor(norm_std_all[:2], dtype=torch.float32).to(device)
+    
+    initial_results_with_weights = compute_population_r2(subgraphs, train_ids, use_weights=True,
+                                                        category_weights=category_weights, poi_categories=poi_categories)
+    initial_population_with_weights = initial_results_with_weights['population_r2']
+
+
+    best_subgraphs = copy.deepcopy(subgraphs)
+    best_model_state = copy.deepcopy(region_gnn.state_dict())
+    best_proj_state = copy.deepcopy(projection_layer.state_dict())
+    
+    baseline_reward_buffer = 0.0  
+    baseline_reward_multihead = 0.0  
+    baseline_reward_gnn = 0.0  
+    region0_old_buffer = None
+    region0_cov_before = None
+    region0_cov_after = None
+    region0_sat_before = None
+    region0_sat_after = None
+    epsilon = 1e-8
+
+    current_population_with_weights = initial_population_with_weights
+    reward_history['population_reward'].append(initial_population_with_weights)
+    initial_total_buffer = sum([subgraphs[rid][2]['buffer'] for rid in train_ids])
+
+    for rnd in range(rl_rounds):
+        print(f"\n=== RL Training Round {rnd+1}/{rl_rounds} ===")
+        
+        round_start_total_buffer = sum([subgraphs[rid][2]['buffer'] for rid in train_ids])
+        
+        old_buffer_controller = copy.deepcopy(buffer_controller)
+        
+        region_gnn.train()
+        projection_layer.train()
+        buffer_controller.train()
+        candidate_attention.train()
+        
+        total_buffer_loss = []
+        total_multihead_loss = []
+        total_gnn_proj_loss = []
+        total_penalty = 0.0
+        
+        region_counter_check = 0
+        
+        track_category_growth(subgraphs, train_ids, poi_categories, rnd+1, "train")
+        
+        for region_id in tqdm(train_ids, desc=f"Round {rnd+1} Training"):
+            sg, region_shape, region_info = subgraphs[region_id]
+            
+            if region_counter_check == 0:
+                region0_old_buffer = region_info['buffer']
+                region0_cov_before = ret_cell_coverage(sg, grid_resolution=0.01)
+                region0_sat_before = ret_saturation_reward_dynamic(sg, poi_categories, method='mean')
+            
+            cov = ret_cell_coverage(sg, grid_resolution=0.01)
+            sat = ret_saturation_reward_dynamic(sg, poi_categories, method='mean')
+            raw_state = torch.tensor([[cov, sat, region_info['buffer']]], dtype=torch.float32).to(device)
+            norm_state = torch.cat([
+                (raw_state[:, :2] - norm_mean_12.unsqueeze(0)) / (norm_std_12.unsqueeze(0) + epsilon),
+                raw_state[:, 2:] 
+            ], dim=1)
+            
+            old_delta, old_log_prob = old_buffer_controller(norm_state)
+            new_delta, new_log_prob = buffer_controller(norm_state)
+            ratio = torch.exp(new_log_prob - old_log_prob)
+            
+            delta_value = new_delta.item() if math.isfinite(new_delta.item()) else 0.0
+            clipping_max = 0.3 * region_info['buffer']
+            delta_clipped = max(min(delta_value, clipping_max), 0)
+            new_buffer = region_info['buffer'] + delta_clipped
+
+            desired_delta = 0.2 * region_info['buffer']
+            lambda_penalty = 1
+            region_penalty = lambda_penalty * max(delta_value - desired_delta, 0)
+            total_penalty += region_penalty
+            
+            region_info['buffer'] = new_buffer
+            total_buffer_loss.append((ratio, new_log_prob.mean(), region_id))
+            
+            # RL expansion with selected strategy
+            if rnd < early_rounds:
+                expand_fn = rl_expand_region
+                strategy_name = "standard"
+            else:
+                expand_fn = rl_expand_region_with_dynamic_threshold
+                strategy_name = f"dynamic_threshold_{threshold_strategy}"
+            
+            expanded_sg, old_region_emb, new_region_emb, log_probs, multihead_loss = expand_fn(
+                sg, region_shape, region_info['buffer'], rl_topk, region_gnn, large_graph,
+                poi_locations, poi_tree, projection_layer, candidate_attention,
+                is_training=True, poi_categories=poi_categories, category_weights=category_weights,
+                threshold_strategy=threshold_strategy if rnd >= early_rounds else None
+            )
+            
+            if region_counter_check == 0:
+                print(f"Round {rnd+1} expansion strategy: {strategy_name}")
+            
+            expanded_sg = update_connectivity(expanded_sg, poi_locations)
+            expansion_count = expanded_sg.x.size(0) - sg.x.size(0)
+            region_info['last_expansion_count'] = expansion_count
+            
+            subgraphs[region_id] = (expanded_sg, region_shape, region_info)
+            
+            total_multihead_loss.append(multihead_loss)
+            
+            if log_probs.numel() > 0:
+                total_gnn_proj_loss.append(-log_probs.mean())
+            else:
+                total_gnn_proj_loss.append(torch.tensor(0.0, device=device, requires_grad=True))
+            
+            region_counter_check += 1
+        
+        track_expansion_statistics(subgraphs, train_ids, rnd+1, "train")
+        
+        
+        after_results_with_weights = compute_population_r2(subgraphs, train_ids, use_weights=True,
+                                                          category_weights=category_weights, poi_categories=poi_categories)
+        after_population_with_weights = after_results_with_weights['population_r2']
+        delta_population_with_weights = after_population_with_weights - current_population_with_weights
+        
+        round_end_total_buffer = sum([subgraphs[rid][2]['buffer'] for rid in train_ids])
+        delta_total_buffer = (round_end_total_buffer - round_start_total_buffer) / len(train_ids)
+        
+        print(f"Population evaluation after round {rnd+1}:")
+
+        print(f"  Population R² = {after_results_with_weights['population_r2']:.4f} ± {after_results_with_weights['population_r2_std']:.4f}")
+        print(f"  Population MAE = {after_results_with_weights['population_mae']:.4f} ± {after_results_with_weights['population_mae_std']:.4f}")
+        print(f"  Population RMSE = {after_results_with_weights['population_rmse']:.4f} ± {after_results_with_weights['population_rmse_std']:.4f}")
+        
+        print(f"Delta comparison:")
+        print(f"  Population R² delta: {delta_population_with_weights:+.4f}")
+        print(f"  Average buffer delta: {delta_total_buffer:+.2f}")
+        
+        current_population_with_weights = after_population_with_weights
+        
+        reward_history['delta_r2'].append(delta_population_with_weights)
+        reward_history['delta_buffer'].append(delta_total_buffer)
+        reward_history['population_reward'].append(after_population_with_weights)
+        
+        # Compute rewards for optimization
+        if len(reward_history['delta_r2']) >= min_history_length:
+            recent_r2_deltas = reward_history['delta_r2'][-min_history_length:]
+            recent_buffer_deltas = reward_history['delta_buffer'][-min_history_length:]
+            
+            mean_r2_delta = np.mean(recent_r2_deltas)
+            mean_buffer_delta = np.mean(recent_buffer_deltas)
+            
+            baseline_reward_buffer = w1 * mean_r2_delta - w2 * abs(mean_buffer_delta)
+            baseline_reward_multihead = mean_r2_delta
+            baseline_reward_gnn = mean_r2_delta
+            
+            print(f"Computed rewards: Buffer={baseline_reward_buffer:.4f}, MultiHead={baseline_reward_multihead:.4f}, GNN={baseline_reward_gnn:.4f}")
+        else:
+            baseline_reward_buffer = delta_population_with_weights
+            baseline_reward_multihead = delta_population_with_weights
+            baseline_reward_gnn = delta_population_with_weights
+            print(f"Using simple reward: {delta_population_with_weights:.4f} (insufficient history)")
+        
+        # Update models
+        # Buffer Controller update
+        if total_buffer_loss:
+            buffer_loss = 0
+            for ratio, log_prob, region_id in total_buffer_loss:
+                advantage = baseline_reward_buffer
+                policy_loss = -log_prob * advantage
+                buffer_loss += policy_loss
+            
+            buffer_loss = buffer_loss / len(total_buffer_loss) + total_penalty
+            
+            optimizer_buffer.zero_grad()
+            buffer_loss.backward(retain_graph=True)
+            torch.nn.utils.clip_grad_norm_(buffer_controller.parameters(), max_norm=1.0)
+            optimizer_buffer.step()
+            
+            print(f"Buffer loss: {buffer_loss.item():.4f}")
+        
+        # MultiHead Attention update
+        if total_multihead_loss:
+            multihead_loss = sum(total_multihead_loss) / len(total_multihead_loss)
+            advantage = baseline_reward_multihead
+            multihead_loss = multihead_loss * advantage
+            
+            optimizer_multihead.zero_grad()
+            multihead_loss.backward(retain_graph=True)
+            torch.nn.utils.clip_grad_norm_(candidate_attention.parameters(), max_norm=1.0)
+            optimizer_multihead.step()
+            
+            print(f"MultiHead loss: {multihead_loss.item():.4f}")
+        
+        # GNN + Projection update
+        if total_gnn_proj_loss:
+            gnn_proj_loss = sum(total_gnn_proj_loss) / len(total_gnn_proj_loss)
+            advantage = baseline_reward_gnn
+            gnn_proj_loss = gnn_proj_loss * advantage
+            
+            optimizer_gnn_proj.zero_grad()
+            gnn_proj_loss.backward()
+            torch.nn.utils.clip_grad_norm_(list(region_gnn.parameters()) + list(projection_layer.parameters()), max_norm=1.0)
+            optimizer_gnn_proj.step()
+            
+            print(f"GNN+Proj loss: {gnn_proj_loss.item():.4f}")
+        
+        # Update best models if improved
+        if after_population_with_weights > max([r for r in reward_history['population_reward']][:-1], default=-float('inf')):
+            print("New best performance! Saving model states...")
+            best_subgraphs = copy.deepcopy(subgraphs)
+            best_model_state = copy.deepcopy(region_gnn.state_dict())
+            best_proj_state = copy.deepcopy(projection_layer.state_dict())
+        
+        # Print region 0 tracking info
+        if region0_old_buffer is not None:
+            region0_new_buffer = subgraphs[train_ids[0]][2]['buffer']
+            region0_cov_after = ret_cell_coverage(subgraphs[train_ids[0]][0], grid_resolution=0.01)
+            region0_sat_after = ret_saturation_reward_dynamic(subgraphs[train_ids[0]][0], poi_categories, method='mean')
+            
+            print(f"Region {train_ids[0]} tracking:")
+            print(f"  Buffer: {region0_old_buffer:.1f} -> {region0_new_buffer:.1f} (delta: {region0_new_buffer-region0_old_buffer:+.1f})")
+            print(f"  Coverage: {region0_cov_before:.1f} -> {region0_cov_after:.1f} (delta: {region0_cov_after-region0_cov_before:+.1f})")
+            print(f"  Saturation: {region0_sat_before:.1f} -> {region0_sat_after:.1f} (delta: {region0_sat_after-region0_sat_before:+.1f})")
+    
+    train_duration = time.time() - start_time
+    
+    final_results_with_weights = compute_population_r2(subgraphs, train_ids, use_weights=True,
+                                                      category_weights=category_weights, poi_categories=poi_categories)
+    final_population_with_weights = final_results_with_weights['population_r2']
+    
+    print(f"\nFinal training set evaluation:")
+    print(f"  Population R² = {final_results_with_weights['population_r2']:.4f} ± {final_results_with_weights['population_r2_std']:.4f}")
+    print(f"  Population MAE = {final_results_with_weights['population_mae']:.4f} ± {final_results_with_weights['population_mae_std']:.4f}")
+    print(f"  Population RMSE = {final_results_with_weights['population_rmse']:.4f} ± {final_results_with_weights['population_rmse_std']:.4f}")
+    
+    return subgraphs, norm_mean_12, norm_std_12
 
 def train_rl_rounds_with_triple_task_weights(subgraphs, train_ids, region_gnn, projection_layer, buffer_controller,
                     large_graph, poi_locations, poi_tree, rl_topk, rl_rounds, poi_categories, device, 
@@ -1536,6 +2058,7 @@ def train_rl_rounds_with_triple_task_weights(subgraphs, train_ids, region_gnn, p
     initial_results_with_weights = compute_triple_task_r2(subgraphs, train_ids, use_weights=True,
                                                         category_weights=category_weights, poi_categories=poi_categories)
     initial_mixed_with_weights = population_weight * initial_results_with_weights['population_r2'] + housing_weight * initial_results_with_weights['housing_r2'] + gdp_weight * initial_results_with_weights['gdp_r2']
+
 
     best_subgraphs = copy.deepcopy(subgraphs)
     best_model_state = copy.deepcopy(region_gnn.state_dict())
@@ -1671,32 +2194,21 @@ def train_rl_rounds_with_triple_task_weights(subgraphs, train_ids, region_gnn, p
         
         zero_expansion_count, expansion_stats = track_expansion_statistics(subgraphs, train_ids, rnd+1, "train")
 
-        after_results_no_weights = compute_triple_task_r2(subgraphs, train_ids, use_weights=False,
-                                                        category_weights=None, poi_categories=poi_categories)
-        after_mixed_no_weights = population_weight * after_results_no_weights['population_r2'] + housing_weight * after_results_no_weights['housing_r2'] + gdp_weight * after_results_no_weights['gdp_r2']
-        
         after_results_with_weights = compute_triple_task_r2(subgraphs, train_ids, use_weights=True,
                                                           category_weights=category_weights, poi_categories=poi_categories)
         after_mixed_with_weights = population_weight * after_results_with_weights['population_r2'] + housing_weight * after_results_with_weights['housing_r2'] + gdp_weight * after_results_with_weights['gdp_r2']
         
-        delta_mixed_no_weights = after_mixed_no_weights - current_mixed_no_weights
         delta_mixed_with_weights = after_mixed_with_weights - current_mixed_with_weights
         
         round_end_total_buffer = sum([subgraphs[rid][2]['buffer'] for rid in train_ids])
         delta_total_buffer = (round_end_total_buffer - round_start_total_buffer) / len(train_ids)
         
         print(f"Triple-task evaluation after round {rnd+1}:")
-        print("Without weights:")
-        print_triple_task_results(after_results_no_weights, "  ")
-        print(f"  Mixed reward = {after_mixed_no_weights:.4f}")
-        print("With weights:")
-        print_triple_task_results(after_results_with_weights, "  ")
+        print_triple_task_results(after_results_with_weights, "    ")
         print(f"  Mixed reward = {after_mixed_with_weights:.4f}")
-        print(f"Round {rnd+1}: Mixed reward change (without weights) Δ = {delta_mixed_no_weights:.4f}")
         print(f"Round {rnd+1}: Mixed reward change (with weights) Δ = {delta_mixed_with_weights:.4f}")
         print(f"Round {rnd+1}: Total buffer change Δ = {delta_total_buffer:.4f}")
-        print(f"With weights vs without weights improvement: {(after_mixed_with_weights - after_mixed_no_weights) / after_mixed_no_weights * 100:.2f}%")
-
+        
         penalty_term = total_penalty / num_regions if num_regions > 0 else 0.0
         
         
@@ -1777,7 +2289,6 @@ def train_rl_rounds_with_triple_task_weights(subgraphs, train_ids, region_gnn, p
             best_proj_state = copy.deepcopy(projection_layer.state_dict())
             best_subgraphs = copy.deepcopy(subgraphs)
         
-        current_mixed_no_weights = after_mixed_no_weights
         current_mixed_with_weights = after_mixed_with_weights
         
         optimizer_buffer.zero_grad()
@@ -1802,9 +2313,82 @@ def train_rl_rounds_with_triple_task_weights(subgraphs, train_ids, region_gnn, p
     final_mixed_with_weights = population_weight * final_results_with_weights['population_r2'] + housing_weight * final_results_with_weights['housing_r2'] + gdp_weight * final_results_with_weights['gdp_r2']
     
     print(f"\nFinal training set evaluation:")
-    print_triple_task_results(final_results_with_weights, "  ")
+    print_triple_task_results(final_results_with_weights, "    ")
     print(f"  Mixed reward = {final_mixed_with_weights:.4f}")
     return subgraphs, norm_mean_12, norm_std_12
+
+def compute_population_r2(subgraphs, region_ids, use_weights=False, category_weights=None, poi_categories=None):
+    if not use_weights:
+        pop_embs = []
+        pop_labels = []
+        
+        for region_id in region_ids:
+            sg, _, region_info = subgraphs[region_id]
+            if ('population' in region_info and 
+                region_info['population'] and 
+                region_info['population'] > 0):
+                region_emb = compute_region_representation_avg(sg.x).cpu().numpy()
+                pop_embs.append(region_emb)
+                pop_labels.append(region_info['population'])
+                
+    else:
+        pop_embs = []
+        pop_labels = []
+        
+        for region_id in region_ids:
+            sg, _, region_info = subgraphs[region_id]
+            if ('population' in region_info and 
+                region_info['population'] and 
+                region_info['population'] > 0):
+                
+                if category_weights and poi_categories:
+                    category_counts = {}
+                    for idx in sg.orig_indices:
+                        if idx < len(poi_categories):
+                            cat = poi_categories[idx]
+                            category_counts[cat] = category_counts.get(cat, 0) + 1
+                    
+                    total_weight = 0
+                    weighted_emb = torch.zeros_like(sg.x[0])
+                    
+                    for i, idx in enumerate(sg.orig_indices):
+                        if idx < len(poi_categories):
+                            cat = poi_categories[idx]
+                            weight = category_weights.get(cat, 1.0)
+                            weighted_emb += sg.x[i] * weight
+                            total_weight += weight
+                    
+                    if total_weight > 0:
+                        region_emb = (weighted_emb / total_weight).cpu().numpy()
+                    else:
+                        region_emb = compute_region_representation_avg(sg.x).cpu().numpy()
+                else:
+                    region_emb = compute_region_representation_avg(sg.x).cpu().numpy()
+                
+                pop_embs.append(region_emb)
+                pop_labels.append(region_info['population'])
+    
+    if len(pop_embs) > 0:
+        pop_embs = np.array(pop_embs)
+        population_results = evaluate_rf_repeat_5fold(pop_embs, pop_labels, repeats=5)
+
+    else:
+        population_results = {
+            'r2_mean': 0.0, 'r2_std': 0.0,
+            'mae_mean': float('inf'), 'mae_std': 0.0,
+            'rmse_mean': float('inf'), 'rmse_std': 0.0
+        }
+    
+    return {
+        'population_r2': population_results['r2_mean'],
+        'population_r2_std': population_results['r2_std'],
+        'population_mae': population_results['mae_mean'],
+        'population_mae_std': population_results['mae_std'],
+        'population_rmse': population_results['rmse_mean'],
+        'population_rmse_std': population_results['rmse_std'],
+        
+        'pop_embeddings': pop_embs if len(pop_embs) > 0 else None
+    }
 
 def compute_triple_task_r2(subgraphs, region_ids, use_weights=False, category_weights=None, poi_categories=None):
     if not use_weights:
@@ -2123,31 +2707,14 @@ def testing_phase_with_triple_tasks_enhanced(subgraphs, test_ids, region_gnn, pr
         return population_weight * triple_results['population_r2'] + housing_weight * triple_results['housing_r2'] + gdp_weight * triple_results['gdp_r2']
     
     with torch.no_grad():
-        initial_results_no_weights = compute_triple_task_r2(subgraphs, test_ids, use_weights=False)
         initial_results_with_weights = compute_triple_task_r2(subgraphs, test_ids, use_weights=True, 
                                                           category_weights=category_weights, poi_categories=poi_categories)
-        
-        initial_mixed_no_weights = compute_mixed_reward(initial_results_no_weights)
         initial_mixed_with_weights = compute_mixed_reward(initial_results_with_weights)
                 
         print(f"\nInitial test set evaluation:")
-        print("Without weights:")
-        print_triple_task_results(initial_results_no_weights, "  ")
-        print(f"  Mixed reward = {initial_mixed_no_weights:.4f}")
-        print("With weights:")
-        print_triple_task_results(initial_results_with_weights, "  ")
+        print_triple_task_results(initial_results_with_weights, "    ")
         print(f"  Mixed reward = {initial_mixed_with_weights:.4f}")
-
-        population_improvement = (initial_results_with_weights['population_r2'] - initial_results_no_weights['population_r2']) / initial_results_no_weights['population_r2'] * 100
-        housing_improvement = (initial_results_with_weights['housing_r2'] - initial_results_no_weights['housing_r2']) / initial_results_no_weights['housing_r2'] * 100
-        mixed_improvement = (initial_mixed_with_weights - initial_mixed_no_weights) / initial_mixed_no_weights * 100
         
-        print(f"Population prediction weight improvement: {population_improvement:.2f}%")
-        print(f"Housing prediction weight improvement: {housing_improvement:.2f}%")
-        print(f"Mixed reward improvement: {mixed_improvement:.2f}%")
-        
-        target_region_id = test_ids[0]
-        target_initial_indices = copy.deepcopy(subgraphs[target_region_id][0].orig_indices)
         round_results = []
         
         for rnd in range(test_rounds):
@@ -2174,9 +2741,7 @@ def testing_phase_with_triple_tasks_enhanced(subgraphs, test_ids, region_gnn, pr
                     original_poi_count = len(sg.orig_indices)
                     new_poi_count = len(new_sg.orig_indices) if hasattr(new_sg, 'orig_indices') else original_poi_count
                     expansion_count = max(0, new_poi_count - original_poi_count)
-                    if region_id == test_ids[0]: 
-                        print(f"Region {region_id}: Successfully expanded {expansion_count} POIs ({original_poi_count} to {new_poi_count})")
-                
+
                 current_sg = update_connectivity(current_sg, poi_locations)
                 subgraphs[region_id] = (current_sg, region_shape, region_info)
                 
@@ -2194,56 +2759,31 @@ def testing_phase_with_triple_tasks_enhanced(subgraphs, test_ids, region_gnn, pr
                 clipping_max = 0.3 * region_info['buffer']
                 delta_clipped = max(min(delta_value, clipping_max), 0)
                 
-                if region_id == target_region_id:
-                    print(f"Region{region_id}: delta_value = {delta_value:.4f}, delta_clipped = {delta_clipped:.4f}")
-                
                 new_buffer = region_info['buffer'] + delta_clipped
                 region_info['buffer'] = new_buffer
                 
-                if region_id == target_region_id:
-                    print(f"Region {region_id}: Coverage change = {cov_after - cov_before:.2f}, Steiner change = {steiner_after - steiner_before:.2f}")
-            
             global_avg_buffer = np.mean([subgraphs[rid][2]['buffer'] for rid in test_ids])
             print(f"Test round {rnd+1}: Global average Buffer = {global_avg_buffer:.2f}")
             
-            current_results_no_weights = compute_triple_task_r2(subgraphs, test_ids, use_weights=False)
             current_results_with_weights = compute_triple_task_r2(subgraphs, test_ids, use_weights=True,
                                                             category_weights=category_weights, poi_categories=poi_categories)
             
-            current_mixed_no_weights = compute_mixed_reward(current_results_no_weights)
             current_mixed_with_weights = compute_mixed_reward(current_results_with_weights)
 
-            pop_change_no_weights = current_results_no_weights['population_r2'] - initial_results_no_weights['population_r2']
             pop_change_with_weights = current_results_with_weights['population_r2'] - initial_results_with_weights['population_r2']
-            housing_change_no_weights = current_results_no_weights['housing_r2'] - initial_results_no_weights['housing_r2']
             housing_change_with_weights = current_results_with_weights['housing_r2'] - initial_results_with_weights['housing_r2']
-            gdp_change_no_weights = current_results_no_weights['gdp_r2'] - initial_results_no_weights['gdp_r2']
             gdp_change_with_weights = current_results_with_weights['gdp_r2'] - initial_results_with_weights['gdp_r2']
-            mixed_change_no_weights = current_mixed_no_weights - initial_mixed_no_weights
             mixed_change_with_weights = current_mixed_with_weights - initial_mixed_with_weights
             
             print(f"Test round {rnd+1} triple-task evaluation:")
-            print("  Without weights:")
-            print_triple_task_results(current_results_no_weights, "    ")
-            print(f"    Mixed reward = {current_mixed_no_weights:.4f}")
-            print("  With weights:")
             print_triple_task_results(current_results_with_weights, "    ")
             print(f"    Mixed reward = {current_mixed_with_weights:.4f}")
-            print(f"  Changes (without weights): Population ΔR²={pop_change_no_weights:.4f}, Housing ΔR²={housing_change_no_weights:.4f}, GDP ΔR²={gdp_change_no_weights:.4f}, Mixed Δ={mixed_change_no_weights:.4f}")
             print(f"  Changes (with weights): Population ΔR²={pop_change_with_weights:.4f}, Housing ΔR²={housing_change_with_weights:.4f}, GDP ΔR²={gdp_change_with_weights:.4f}, Mixed Δ={mixed_change_with_weights:.4f}")
             
             round_results.append({
                 'round': rnd + 1,
-                'results_no_weights': current_results_no_weights,
                 'results_with_weights': current_results_with_weights,
-                'mixed_no_weights': current_mixed_no_weights,
                 'mixed_with_weights': current_mixed_with_weights,
-                'changes_no_weights': {
-                    'population': pop_change_no_weights,
-                    'housing': housing_change_no_weights,
-                    'gdp': gdp_change_no_weights,
-                    'mixed': mixed_change_no_weights
-                },
                 'changes_with_weights': {
                     'population': pop_change_with_weights,
                     'housing': housing_change_with_weights,
@@ -2253,21 +2793,14 @@ def testing_phase_with_triple_tasks_enhanced(subgraphs, test_ids, region_gnn, pr
             })
         
         print("\n=== Executing Final Evaluation (5x5-fold Cross Validation) ===")
-        final_results_no_weights = compute_triple_task_r2_final_test(subgraphs, test_ids, use_weights=False)
         final_results_with_weights = compute_triple_task_r2_final_test(subgraphs, test_ids, use_weights=True,
                                                                 category_weights=category_weights, poi_categories=poi_categories)
         print(f"\n=== Final Triple-Task Test Set Evaluation ===")
-        print("Without weights:")
-        print_triple_task_results(final_results_no_weights, "  ")
-        print("With weights:")
-        print_triple_task_results(final_results_with_weights, "  ")
+        print_triple_task_results(final_results_with_weights, "    ")
         
         enhanced_triple_task_results = {
-            'initial_results_no_weights': initial_results_no_weights,
             'initial_results_with_weights': initial_results_with_weights,
-            'initial_mixed_no_weights': initial_mixed_no_weights,
             'initial_mixed_with_weights': initial_mixed_with_weights,
-            'final_results_no_weights': final_results_no_weights,
             'final_results_with_weights': final_results_with_weights,
             'round_by_round_results': round_results,
             'category_weights': category_weights,
@@ -2299,7 +2832,6 @@ def test_openai_api(llm_type='GPT'):
     print(f"Testing {llm_type} API connection...")
     try:
         if llm_type == 'GPT':
-            # api_key = "your_openai_api_key_here"
             api_key = "your_openai_api_key_here"
             client = openai.OpenAI(api_key=api_key)
             response = client.chat.completions.create(
@@ -2310,8 +2842,7 @@ def test_openai_api(llm_type='GPT'):
             result = response.choices[0].message.content
             print(f"GPT API test successful! Response: {result}")
         elif llm_type == 'DeepSeek':
-            # api_key = "your_deepseek_api_key_here"
-            api_key = "your_openai_api_key_here"
+            api_key = "your_deepseek_api_key_here"
             client = openai.OpenAI(
                 api_key=api_key,
                 base_url="https://api.deepseek.com/v1"
@@ -2330,8 +2861,144 @@ def test_openai_api(llm_type='GPT'):
         print(f"{llm_type} API test failed: {str(e)}")
         return False
 
-
-
+def testing_phase_with_single_task_enhanced(subgraphs, test_ids, region_gnn, projection_layer, buffer_controller,
+                                           large_graph, poi_locations, poi_tree, poi_categories, norm_mean_tensor, norm_std_tensor, device,
+                                           optimized_weights, test_rounds=5, rl_topk=40, candidate_attention=None, city='Singapore', mode='total'):
+    """Testing phase specifically for single-task cities (Singapore/NYC) using population-only evaluation"""
+    print(f"Starting single-task testing for {city} with {len(test_ids)} regions, {test_rounds} rounds, top-{rl_topk} expansion")
+    
+    # Initial evaluation
+    initial_pop_r2_weighted = compute_population_r2(subgraphs, test_ids, use_weights=True, 
+                                                   category_weights=optimized_weights, poi_categories=poi_categories)
+    
+    print("Initial population R² performance (test set):")
+    print(f"  With weights: {initial_pop_r2_weighted:.4f}")
+    
+    # Perform expansion testing
+    expansion_results = []
+    
+    for test_region_id in tqdm(test_ids[:min(100, len(test_ids))], desc="Testing expansion"):
+        subgraph, region_shape, region_info = subgraphs[test_region_id]
+        original_nodes = subgraph.x.shape[0]
+        
+        # Expansion simulation
+        current_subgraph = subgraph
+        current_region_info = region_info.copy()
+        
+        round_results = []
+        
+        for round_idx in range(test_rounds):
+            # Get expansion candidates using same approach as RL functions
+            buffered_poly = current_region_info['region_shape'].buffer(current_region_info['buffer'])
+            prepared_region = prep(buffered_poly)
+            minx, miny, maxx, maxy = buffered_poly.bounds
+            center = [(minx + maxx) / 2, (miny + maxy) / 2]
+            radius = np.sqrt((maxx - minx)**2 + (maxy - miny)**2) / 2
+            candidate_indices = poi_tree.query_ball_point(center, radius)
+            
+            # Filter candidates
+            candidates = []
+            existing_pois = set(current_region_info.get('pois', []))
+            for idx in candidate_indices:
+                if idx in existing_pois:
+                    continue
+                pt = Point(poi_locations[idx][1], poi_locations[idx][0])
+                if prepared_region.contains(pt) and (not current_region_info['region_shape'].contains(pt)):
+                    candidates.append(idx)
+            
+            candidates = candidates[:rl_topk]  # Limit to top k
+            
+            if not candidates:
+                break
+                
+            # Use model to select best candidates
+            if mode == 'total':
+                # Trained model selection
+                region_gnn.eval()
+                with torch.no_grad():
+                    region_embedding = region_gnn(current_subgraph.x, current_subgraph.edge_index)
+                    region_rep = torch.mean(region_embedding, dim=0, keepdim=True)
+                    
+                    # Evaluate candidates
+                    candidate_scores = []
+                    for candidate_idx in candidates:
+                        candidate_embedding = large_graph.x[candidate_idx].unsqueeze(0)
+                        if candidate_attention:
+                            score = candidate_attention(region_rep, candidate_embedding).item()
+                        else:
+                            score = torch.cosine_similarity(region_rep, candidate_embedding).item()
+                        candidate_scores.append((candidate_idx, score))
+                    
+                    # Select top candidates
+                    candidate_scores.sort(key=lambda x: x[1], reverse=True)
+                    selected_candidates = [idx for idx, _ in candidate_scores[:max(1, rl_topk//4)]]
+            else:
+                # Random selection for no_train mode
+                selected_candidates = candidates[:max(1, rl_topk//4)]
+            
+            # Add candidates and update subgraph
+            new_poi_indices = current_region_info.get('pois', []) + selected_candidates
+            current_region_info['pois'] = new_poi_indices
+            
+            # Create updated subgraph
+            mapping = None  # For SG/NYC, no mapping needed
+            updated_subgraph, _ = create_subgraph_from_region(
+                current_region_info, large_graph, poi_locations, buffer_value=0, 
+                original_to_filtered_mapping=mapping
+            )
+            current_subgraph = updated_subgraph
+            
+            # Evaluate round performance
+            temp_subgraphs = {test_region_id: (current_subgraph, region_shape, current_region_info)}
+            round_pop_r2 = compute_population_r2(temp_subgraphs, [test_region_id], use_weights=True,
+                                                category_weights=optimized_weights, poi_categories=poi_categories)
+            
+            round_results.append({
+                'round': round_idx + 1,
+                'nodes_added': len(selected_candidates),
+                'total_nodes': current_subgraph.x.shape[0],
+                'population_r2': round_pop_r2
+            })
+        
+        # Store region expansion results
+        final_pop_r2 = round_results[-1]['population_r2'] if round_results else initial_pop_r2_weighted
+        expansion_results.append({
+            'region_id': test_region_id,
+            'original_nodes': original_nodes,
+            'final_nodes': round_results[-1]['total_nodes'] if round_results else original_nodes,
+            'initial_pop_r2': initial_pop_r2_weighted,
+            'final_pop_r2': final_pop_r2,
+            'improvement': final_pop_r2 - initial_pop_r2_weighted,
+            'rounds_completed': len(round_results)
+        })
+    
+    # Analyze results
+    if expansion_results:
+        avg_initial_r2 = np.mean([r['initial_pop_r2'] for r in expansion_results])
+        avg_final_r2 = np.mean([r['final_pop_r2'] for r in expansion_results])
+        avg_improvement = np.mean([r['improvement'] for r in expansion_results])
+        avg_nodes_added = np.mean([r['final_nodes'] - r['original_nodes'] for r in expansion_results])
+        
+        print(f"\n=== Single-task Testing Results Summary ===")
+        print(f"Regions tested: {len(expansion_results)}")
+        print(f"Average initial population R²: {avg_initial_r2:.4f}")
+        print(f"Average final population R²: {avg_final_r2:.4f}")
+        print(f"Average population R² improvement: {avg_improvement:.4f}")
+        print(f"Average nodes added per region: {avg_nodes_added:.1f}")
+        
+        improvement_pct = (avg_improvement / avg_initial_r2) * 100
+        print(f"Average relative improvement: {improvement_pct:.2f}%")
+        
+        # Distribution analysis
+        positive_improvements = [r for r in expansion_results if r['improvement'] > 0]
+        print(f"Regions with positive improvement: {len(positive_improvements)}/{len(expansion_results)} ({len(positive_improvements)/len(expansion_results)*100:.1f}%)")
+        
+        if positive_improvements:
+            avg_positive_improvement = np.mean([r['improvement'] for r in positive_improvements])
+            print(f"Average improvement (positive only): {avg_positive_improvement:.4f}")
+    
+    print(f"Single-task testing completed for {city}")
+    return expansion_results
 
 
 def main():
@@ -2411,6 +3078,8 @@ def main():
     suburban_dir = get_suburban_dir()
     if city in ['Beijing','Shanghai']:
         poi_path = os.path.join(suburban_dir, 'data', dataset, 'projected', city, f'poi_{drop}_{version}_{top_k}.txt')
+    elif city in ['Singapore','NYC']:
+        poi_path = os.path.join(suburban_dir, 'data', dataset, 'projected', city, f'poi_{drop}_{version}_{top_k}.txt')
     poi_embeddings_path = os.path.join(suburban_dir, 'embs', 'BERT', city, f'poi_embeddings_{drop}_{version}.npy')
     poi_embeddings = np.load(poi_embeddings_path)
     
@@ -2433,6 +3102,12 @@ def main():
     
     global poi_locations
     poi_locations = np.array(poi_locations_loaded)
+    
+    # Coordinate transformation for Singapore and NYC (swap lat/lon)
+    if city in ['Singapore', 'NYC']:
+        poi_locations = poi_locations[:, [1, 0]]  # Swap columns: [lat, lon] -> [lon, lat]
+        print(f"Applied coordinate transformation for {city} (swapped lat/lon)")
+    
     if poi_locations.shape[1] != 2:
         raise ValueError("POI locations must be 2D for Delaunay triangulation")
     
@@ -2474,8 +3149,11 @@ def main():
     if city in ['Beijing','Shanghai']:
         suburban_dir = get_suburban_dir()
         region_data_path = os.path.join(suburban_dir, 'data', dataset, 'processed', 'Integral', f'{city_short}_data_{drop}_{version}_{top_k}.pkl')
+    elif city in ['Singapore','NYC']:
+        suburban_dir = get_suburban_dir()
+        region_data_path = os.path.join(suburban_dir, 'data', dataset, 'processed', 'Integral', f'{city_short}_data_{drop}_{version}_{top_k}.pkl')
     else:
-        print("Please choose cities between Beijing and Shanghai")
+        print("Please choose cities from: Beijing, Shanghai, Singapore, NYC")
     
     print(f"Loading region data from: {region_data_path}")
     with open(region_data_path, 'rb') as f:
@@ -2566,38 +3244,40 @@ def main():
     # Choose mode of execution
     if mode == 'total':
         # Complete execution path: CEM optimization + RL training + testing
-        print("\n=== Phase 1: Optimize POI Category Weights using CEM (Triple-Task) ===")
-        optimized_weights = optimize_category_weights_with_cem_triple_task(
+        print(f"\n=== Phase 1: Optimize POI Category Weights using CEM ({city}) ===")
+        optimized_weights = optimize_category_weights_with_cem_city_adaptive(
             subgraphs, rl_train_ids, region_gnn, projection_layer, 
             large_graph, poi_locations, poi_tree, poi_categories, 
             device, candidate_attention,
             expand_steps=expand_steps, fixed_buffer=fixed_buffer, 
             n_iterations=cem_iterations, n_samples=cem_samples, cem_samples=cem_samples,
-            population_weight=population_weight, housing_weight=housing_weight, gdp_weight=gdp_weight, city=city, rl_topk=rl_topk, llm_type=llm_type, llm_instruct=llm_instruct)
+            population_weight=population_weight, housing_weight=housing_weight, gdp_weight=gdp_weight, 
+            city=city, rl_topk=rl_topk, llm_type=llm_type, llm_instruct=llm_instruct)
             
        
-        print("\n=== Evaluate Optimized Weight Triple-Task Performance ===")
-        initial_triple_no_weights = compute_triple_task_r2(subgraphs, rl_train_ids, use_weights=False)
-        initial_triple_with_weights = compute_triple_task_r2(subgraphs, rl_train_ids, use_weights=True,
-                                                       category_weights=optimized_weights, poi_categories=poi_categories)
+        print(f"\n=== Evaluate Optimized Performance ({city}) ===")
+        if city in ['Singapore', 'NYC']:
+            # Single-task evaluation for SG/NYC
+            initial_pop_with_weights = compute_population_r2(subgraphs, rl_train_ids, use_weights=True,
+                                                           category_weights=optimized_weights, poi_categories=poi_categories)
             
-        print(f"Training set triple-task evaluation:")
-        print("Without weights:")
-        print_triple_task_results(initial_triple_no_weights, "  ")
-        print("With weights:")
-        print_triple_task_results(initial_triple_with_weights, "  ")
-        
-        pop_improvement = (initial_triple_with_weights['population_r2'] - initial_triple_no_weights['population_r2']) / initial_triple_no_weights['population_r2'] * 100
-        house_improvement = (initial_triple_with_weights['housing_r2'] - initial_triple_no_weights['housing_r2']) / initial_triple_no_weights['housing_r2'] * 100
-        
-        print(f"Population prediction weight improvement: {pop_improvement:.2f}%")
-        print(f"Housing prediction weight improvement: {house_improvement:.2f}%")
+            print(f"Training set single-task (population) evaluation:")
+            print(f"  Population R² = {initial_pop_with_weights['population_r2']:.4f} ± {initial_pop_with_weights['population_r2_std']:.4f}")
+            print(f"  Population MAE = {initial_pop_with_weights['population_mae']:.4f} ± {initial_pop_with_weights['population_mae_std']:.4f}")
+            print(f"  Population RMSE = {initial_pop_with_weights['population_rmse']:.4f} ± {initial_pop_with_weights['population_rmse_std']:.4f}")
+        else:
+            # Triple-task evaluation for BJ/SH
+            initial_triple_with_weights = compute_triple_task_r2(subgraphs, rl_train_ids, use_weights=True,
+                                                           category_weights=optimized_weights, poi_categories=poi_categories)
+                
+            print(f"Training set triple-task evaluation:")
+            print_triple_task_results(initial_triple_with_weights, "    ")
 
-        print("\n=== Phase 2: RL Training with Optimized Weights (Triple-Task) ===")
-        subgraphs, norm_mean_tensor, norm_std_tensor = train_rl_rounds_with_triple_task_weights(
+        print(f"\n=== Phase 2: RL Training with Optimized Weights ({city}) ===")
+        subgraphs, norm_mean_tensor, norm_std_tensor = train_rl_rounds_with_city_adaptive_weights(
             subgraphs, rl_train_ids, region_gnn, projection_layer, buffer_controller,
             large_graph, poi_locations, poi_tree, rl_topk, rl_rounds, poi_categories, device,
-            candidate_attention, optimized_weights, 
+            candidate_attention, optimized_weights, city=city,
             population_weight=population_weight, housing_weight=housing_weight, gdp_weight=gdp_weight,
             w1=w1, w2=w2, threshold_strategy = 'dynamic_mean')
         
@@ -2605,12 +3285,18 @@ def main():
         print("Training completed. Global average Buffer value =", avg_buffer)
         
         
-        print("\n=== Stage 3: Testing Phase (Triple-task evaluation - training mode) ===")
-        testing_phase_with_triple_tasks_enhanced(
-            subgraphs, test_ids, region_gnn, projection_layer, buffer_controller,
-            large_graph, poi_locations, poi_tree, poi_categories, norm_mean_tensor, norm_std_tensor, device,
-            optimized_weights, population_weight=population_weight, housing_weight=housing_weight, gdp_weight=gdp_weight,
-            test_rounds=rl_rounds, rl_topk=rl_topk, candidate_attention=candidate_attention, city=city, mode=mode)
+        print(f"\n=== Stage 3: Testing Phase ({city} - training mode) ===")
+        if city in ['Singapore', 'NYC']:
+            testing_phase_with_single_task_enhanced(
+                subgraphs, test_ids, region_gnn, projection_layer, buffer_controller,
+                large_graph, poi_locations, poi_tree, poi_categories, norm_mean_tensor, norm_std_tensor, device,
+                optimized_weights, test_rounds=rl_rounds, rl_topk=rl_topk, candidate_attention=candidate_attention, city=city, mode=mode)
+        else:
+            testing_phase_with_triple_tasks_enhanced(
+                subgraphs, test_ids, region_gnn, projection_layer, buffer_controller,
+                large_graph, poi_locations, poi_tree, poi_categories, norm_mean_tensor, norm_std_tensor, device,
+                optimized_weights, population_weight=population_weight, housing_weight=housing_weight, gdp_weight=gdp_weight,
+                test_rounds=rl_rounds, rl_topk=rl_topk, candidate_attention=candidate_attention, city=city, mode=mode)
 
     elif mode == 'no_train':
         
@@ -2628,53 +3314,66 @@ def main():
         print("Normalization statistics calculated from training data (coverage & Steiner): mean", norm_mean_all[:2], "std", norm_std_all[:2])
         
       
-        print("\n=== Initial Triple-task Evaluation (Untrained Model) ===")
-        initial_triple_baseline = compute_triple_task_r2(subgraphs, test_ids, use_weights=False)
-        initial_triple_default_weights = compute_triple_task_r2(subgraphs, test_ids, use_weights=True,
-                                                          category_weights=default_weights, poi_categories=poi_categories)
-        
-        print(f"Test set triple-task evaluation (initial state):")
-        print("Without weights:")
-        print_triple_task_results(initial_triple_baseline, "  ")
-        print("Using default weights:")
-        print_triple_task_results(initial_triple_default_weights, "  ")
+        print(f"\n=== Initial Evaluation (Untrained Model - {city}) ===")
+        if city in ['Singapore', 'NYC']:
+            # Single-task evaluation for SG/NYC
+            initial_pop_default_weights = compute_population_r2(subgraphs, test_ids, use_weights=True,
+                                                              category_weights=default_weights, poi_categories=poi_categories)
+            
+            print(f"Test set single-task (population) evaluation (initial state):")
+            print(f"  Using default weights: {initial_pop_default_weights:.4f}")
+        else:
+            # Triple-task evaluation for BJ/SH
+            initial_triple_default_weights = compute_triple_task_r2(subgraphs, test_ids, use_weights=True,
+                                                              category_weights=default_weights, poi_categories=poi_categories)
+            
+            print(f"Test set triple-task evaluation (initial state):")
+            print("Using default weights:")
+            print_triple_task_results(initial_triple_default_weights, "    ")
         
        
-        print("\n=== Testing Phase (Triple-task evaluation - random expansion mode) ===")
+        print(f"\n=== Testing Phase ({city} - random expansion mode) ===")
         print("Note: Using untrained model, expansion behavior is close to random")
-        testing_phase_with_triple_tasks_enhanced(
-            subgraphs, test_ids, region_gnn, projection_layer, buffer_controller,
-            large_graph, poi_locations, poi_tree, poi_categories, norm_mean_tensor, norm_std_tensor, device,
-            default_weights, population_weight=population_weight, housing_weight=housing_weight, gdp_weight=gdp_weight,
-            test_rounds=rl_rounds, rl_topk=rl_topk, candidate_attention=candidate_attention, city=city, mode=mode)
+        if city in ['Singapore', 'NYC']:
+            testing_phase_with_single_task_enhanced(
+                subgraphs, test_ids, region_gnn, projection_layer, buffer_controller,
+                large_graph, poi_locations, poi_tree, poi_categories, norm_mean_tensor, norm_std_tensor, device,
+                default_weights, test_rounds=rl_rounds, rl_topk=rl_topk, candidate_attention=candidate_attention, city=city, mode=mode)
+        else:
+            testing_phase_with_triple_tasks_enhanced(
+                subgraphs, test_ids, region_gnn, projection_layer, buffer_controller,
+                large_graph, poi_locations, poi_tree, poi_categories, norm_mean_tensor, norm_std_tensor, device,
+                default_weights, population_weight=population_weight, housing_weight=housing_weight, gdp_weight=gdp_weight,
+                test_rounds=rl_rounds, rl_topk=rl_topk, candidate_attention=candidate_attention, city=city, mode=mode)
     elif mode == 'no_cem':
               
         unique_categories = sorted(set(poi_categories))
         default_weights = {cat: 1.0 for cat in unique_categories}
         print(f"Skipping CEM, using default weights directly (all {len(unique_categories)} category weights set to 1.0)")
        
-        print("\n=== Evaluating Optimized Weights for Triple-task Performance ===")
-        initial_triple_no_weights = compute_triple_task_r2(subgraphs, rl_train_ids, use_weights=False)
-        initial_triple_with_weights = compute_triple_task_r2(subgraphs, rl_train_ids, use_weights=True,
-                                                       category_weights=default_weights, poi_categories=poi_categories)
+        print(f"\n=== Evaluating Default Performance ({city}) ===")
+        if city in ['Singapore', 'NYC']:
+            # Single-task evaluation for SG/NYC
+            initial_pop_with_weights = compute_population_r2(subgraphs, rl_train_ids, use_weights=True,
+                                                           category_weights=default_weights, poi_categories=poi_categories)
             
-        print(f"Training set triple-task evaluation:")
-        print("Without weights:")
-        print_triple_task_results(initial_triple_no_weights, "  ")
-        print("Using weights:")
-        print_triple_task_results(initial_triple_with_weights, "  ")
-        
-        pop_improvement = (initial_triple_with_weights['population_r2'] - initial_triple_no_weights['population_r2']) / initial_triple_no_weights['population_r2'] * 100
-        house_improvement = (initial_triple_with_weights['housing_r2'] - initial_triple_no_weights['housing_r2']) / initial_triple_no_weights['housing_r2'] * 100
-        
-        print(f"Population prediction weight improvement: {pop_improvement:.2f}%")
-        print(f"Housing price prediction weight improvement: {house_improvement:.2f}%")
+            print(f"Training set single-task (population) evaluation:")
+            print(f"  Population R² = {initial_pop_with_weights['population_r2']:.4f} ± {initial_pop_with_weights['population_r2_std']:.4f}")
+            print(f"  Population MAE = {initial_pop_with_weights['population_mae']:.4f} ± {initial_pop_with_weights['population_mae_std']:.4f}")
+            print(f"  Population RMSE = {initial_pop_with_weights['population_rmse']:.4f} ± {initial_pop_with_weights['population_rmse_std']:.4f}")
+        else:
+            # Triple-task evaluation for BJ/SH
+            initial_triple_with_weights = compute_triple_task_r2(subgraphs, rl_train_ids, use_weights=True,
+                                                           category_weights=default_weights, poi_categories=poi_categories)
+                
+            print(f"Training set triple-task evaluation:")
+            print_triple_task_results(initial_triple_with_weights, "    ")
 
-        print("\n=== Stage 2: RL Training with Optimized Weights (Triple-task) ===")
-        subgraphs, norm_mean_tensor, norm_std_tensor = train_rl_rounds_with_triple_task_weights(
+        print(f"\n=== Stage 2: RL Training with Default Weights ({city}) ===")
+        subgraphs, norm_mean_tensor, norm_std_tensor = train_rl_rounds_with_city_adaptive_weights(
             subgraphs, rl_train_ids, region_gnn, projection_layer, buffer_controller,
             large_graph, poi_locations, poi_tree, rl_topk, rl_rounds, poi_categories, device,
-            candidate_attention, default_weights, 
+            candidate_attention, default_weights, city=city,
             population_weight=population_weight, housing_weight=housing_weight, gdp_weight=gdp_weight,
             w1=w1, w2=w2, threshold_strategy = 'dynamic_mean')
         
@@ -2682,12 +3381,18 @@ def main():
         print("Training completed. Global average Buffer value =", avg_buffer)
         
     
-        print("\n=== Stage 3: Testing Phase (Triple-task evaluation - training mode) ===")
-        testing_phase_with_triple_tasks_enhanced(
-            subgraphs, test_ids, region_gnn, projection_layer, buffer_controller,
-            large_graph, poi_locations, poi_tree, poi_categories, norm_mean_tensor, norm_std_tensor, device,
-            default_weights, population_weight=population_weight, housing_weight=housing_weight, gdp_weight=gdp_weight,
-            test_rounds=rl_rounds, rl_topk=rl_topk, candidate_attention=candidate_attention, city=city, mode=mode)
+        print(f"\n=== Stage 3: Testing Phase ({city} - training mode) ===")
+        if city in ['Singapore', 'NYC']:
+            testing_phase_with_single_task_enhanced(
+                subgraphs, test_ids, region_gnn, projection_layer, buffer_controller,
+                large_graph, poi_locations, poi_tree, poi_categories, norm_mean_tensor, norm_std_tensor, device,
+                default_weights, test_rounds=rl_rounds, rl_topk=rl_topk, candidate_attention=candidate_attention, city=city, mode=mode)
+        else:
+            testing_phase_with_triple_tasks_enhanced(
+                subgraphs, test_ids, region_gnn, projection_layer, buffer_controller,
+                large_graph, poi_locations, poi_tree, poi_categories, norm_mean_tensor, norm_std_tensor, device,
+                default_weights, population_weight=population_weight, housing_weight=housing_weight, gdp_weight=gdp_weight,
+                test_rounds=rl_rounds, rl_topk=rl_topk, candidate_attention=candidate_attention, city=city, mode=mode)
 
     total_duration = time.time() - total_start_time
     print(f"\n=== Total duration: {total_duration:.2f} seconds ({total_duration/60:.2f} minutes) ===")

@@ -62,7 +62,6 @@ def load_poi(city, poi_mode, version, dataset, top_k, drop):
     
     if city in ['Beijing', 'Shanghai']:
         with open(file_path, 'r') as f:
-        # with open(f'/home_nfs/regionteam/BanditRegion/data/GPT4o_RAG/Shanghai/RAG_pois_with_UTM_coords.txt', 'r') as f:
             lines = f.readlines()
             # Count the number of lines in the file
             print(f"Number of pois in original txt file: {len(lines)}")
@@ -71,20 +70,13 @@ def load_poi(city, poi_mode, version, dataset, top_k, drop):
                 poi_loc.append([float(fields[2]), float(fields[1])])
                 poi_text = fields[0]
                 if poi_mode == 'filtered':
-                    # 在筛选后的文件中，索引应该在最后一列，无论原始行有多少列
                     try:
-                        poi_index.append(int(fields[-1]))  # 使用最后一列作为索引
+                        poi_index.append(int(fields[-1]))
                     except (ValueError, IndexError) as e:
                         print(f"警告：无法解析索引，使用None代替。错误: {e}, 行: {line.strip()}")
                         poi_index.append(None)
                 else:
                     poi_index.append(None)
-    # elif (city == 'Hangzhou'):
-    #     with open(f'/home_nfs/regionteam/BanditRegion/data/Meituan/projected/{city}/poi.txt', 'r') as f:
-    #         lines = f.readlines()
-    #         for line in tqdm(lines):
-    #             fields = line.strip().split('\t')
-    #             poi_loc.append([float(fields[2]), float(fields[1])])
     else:
         raise ValueError("Unsupported city. Please choose 'Beijing', 'Shanghai' or 'Hangzhou'")
     
@@ -140,8 +132,6 @@ def load_pop(city):
 
     return data
 
-
-
 def load_house(city):
     suburban_dir = get_suburban_dir()
     file_path = os.path.join(suburban_dir, 'data', 'Gaode', 'processed', 'house', f'{city}_house_data.txt')
@@ -184,24 +174,15 @@ def load_gdp(city):
         for line in tqdm(lines, desc=f"Loading GDP data for {city}"):
             fields = line.strip().split('\t')
             if len(fields) >= 3:
-                # 需要交换坐标顺序 - 数据文件中是 UTM_X, UTM_Y, 但在程序中的坐标系统可能是反的
                 x = float(fields[0])  # UTM_X
                 y = float(fields[1])  # UTM_Y
                 gdp_value = float(fields[2])
-                
-                # 重要：尝试两种不同的坐标顺序，以便找出哪种匹配
-                # 第一种方式：不交换坐标
                 gdp_locations.append([y, x])
                 gdp_values.append(gdp_value)
     
     print(f"Loaded {len(gdp_locations)} GDP grid points")
     return gdp_locations, gdp_values
 
-# def process_house_price(house_loc):
-#     house_price = []
-#     for house in house_loc:
-#         house_price=
-#     return house_price
 
 def process_pop(data):
     # Calculate the percentages sum of each FID region
@@ -247,137 +228,7 @@ def extract_index_from_filename(filename):
             return None
     return None
 
-# def load_image_filenames_and_extract_coordinates(directory):
-#     images_info = []
-#     filenames = sorted([f for f in os.listdir(directory) if f.endswith('.png')], key=extract_index_from_filename)
-    
-#     # Create a dictionary to count the images for each sampling point
-#     sampling_point_counters = {}
 
-#     for filename in tqdm(filenames, desc="Loading images"):
-#         lat, lon , heading = extract_lat_lon_from_filename(filename)
-#         if lat is not None and lon is not None:
-#             sampling_point_index = extract_index_from_filename(filename)
-            
-#             # Generate a unique index
-#             if sampling_point_index not in sampling_point_counters:
-#                 sampling_point_counters[sampling_point_index] = 0
-#             else:
-#                 sampling_point_counters[sampling_point_index] += 1
-            
-#             unique_index = f"{sampling_point_index}_{sampling_point_counters[sampling_point_index]}"
-#             images_info.append({'filename': filename, 'latitude': lat, 'longitude': lon, 'heading': heading,'unique_index': unique_index})
-    
-#     print(f"Successfully loaded {len(images_info)} images")
-#     return pd.DataFrame(images_info)
-
-# # Function to transform coordinates
-# def transform_coords(lon, lat, city):
-#     if city in ['Beijing', 'Shanghai']:
-#         utm_y, utm_x, _, _ = utm.from_latlon(lat, lon)
-#         return utm_x, utm_y
-#     elif city == 'Hangzhou':
-#         transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:2385", always_xy=True)
-#         x, y = transformer.transform(lon, lat)
-#         return x, y
-#     else:
-#         raise ValueError(f"Unsupported city: {city}")
-
-# def buffer_assignment(unassigned_svi, svi_loc, road_region_data, road_regions, buffer_radius):
-#     assigned_svi = []
-#     road_region_df = gpd.GeoDataFrame(road_regions, geometry=[region.centroid for region in road_regions])
-    
-#     for svi_index in tqdm(unassigned_svi, desc="Assigning unassigned SVIs with buffer"):
-#         svi_point = svi_loc[svi_loc['unique_index'] == svi_index].geometry.values[0]
-#         buffer = svi_point.buffer(buffer_radius)
-        
-#         intersecting_regions = road_region_df[road_region_df.geometry.intersects(buffer)]
-        
-#         if not intersecting_regions.empty:
-#             nearest_region = intersecting_regions.iloc[0]
-#             road_region_data[nearest_region.name]['svis'].append({
-#                 'unique_index': svi_index,
-#                 'location': (svi_point.x, svi_point.y)
-#             })
-#             assigned_svi.append(svi_index)
-    
-#     return assigned_svi
-
-def plot_and_summarize(city, road_regions, road_region_data, poi_loc, svi_loc=None):
-    # Helper function to plot and summarize data
-    def plot_data(data_key, data_name, loc_data, index_field, filename_suffix):
-        # Create a list of color intensities based on the number of items in each road region
-        color_intensities = [len(data[data_key]) for data in road_region_data.values()]
-
-        # Normalize the color intensities to the range [0, 1]
-        max_intensity = max(color_intensities, default=1)  # Prevent division by zero if all regions have no items
-        min_intensity = min(color_intensities, default=0)
-        color_intensities = [(intensity - min_intensity) / (max_intensity - min_intensity) if max_intensity > 0 else 0 for intensity in color_intensities]
-
-        # Plot the regions with the number of items as the color intensity
-        fig, ax = plt.subplots(figsize=(10, 10))  # Adjust size as needed
-
-        # Decide the coordinate order based on the city
-        if city == 'Hangzhou':
-            coord_order = lambda x, y: (x, y)
-        else:
-            coord_order = lambda x, y: (y, x)
-
-        for idx, (region, data) in enumerate(zip(road_regions, road_region_data.values())):
-            color_intensity = color_intensities[idx]
-            region_color = (color_intensity, color_intensity, color_intensity)  # Grayscale intensity
-
-            # Draw each polygon in the region
-            if isinstance(region, MultiPolygon):
-                for polygon in region.geoms:
-                    x, y = polygon.exterior.xy
-                    ax.fill(*coord_order(x, y), color=region_color, alpha=0.5)
-            else:
-                x, y = region.exterior.xy
-                ax.fill(*coord_order(x, y), color=region_color, alpha=0.5)
-
-            # Highlight regions with no items in red
-            if len(data[data_key]) == 0:
-                ax.fill(*coord_order(x, y), color='red', alpha=0.5)
-
-        # Set to store indices of items assigned to regions
-        assigned_indices = set()
-
-        # Iterate over road_region_data to collect assigned item indices
-        for data in road_region_data.values():
-            for item_info in data[data_key]:
-                assigned_indices.add(item_info[index_field])
-
-        # Check which item indices are not assigned to any region
-        if data_key == 'pois':
-            unassigned_indices = set(range(len(loc_data))) - assigned_indices
-        elif data_key == 'svis':
-            unassigned_indices = set(loc_data['unique_index']) - assigned_indices
-
-        # Mark unassigned items in blue on the regions plot
-        for item_index in unassigned_indices:
-            if data_key == 'pois':
-                item_x, item_y = loc_data[item_index]
-            elif data_key == 'svis':
-                item = loc_data[loc_data['unique_index'] == item_index].iloc[0]
-                item_x, item_y = item['projected_x'], item['projected_y']
-            ax.plot(*coord_order(item_x, item_y), marker='o', color='blue', markersize=1, linestyle='None')  # Adjust markersize for visibility
-
-        # Print the number of unassigned item embeddings
-        print(f"Number of {data_name} not assigned to any region: {len(unassigned_indices)}")
-
-        # Finalize and save the plot
-        suburban_dir = get_suburban_dir()
-        visualize_dir = os.path.join(suburban_dir, 'tmp', 'visualizations')
-        os.makedirs(visualize_dir, exist_ok=True)
-        plt.savefig(os.path.join(visualize_dir, f"ZQ_road_region_{filename_suffix}_mapping_with_unassigned_{city}.png"))
-
-    # Plot and summarize POIs
-    plot_data('pois', 'POI', poi_loc, 'poi_index', 'poi')
-
-    # Plot and summarize SVIs if provided
-    # if svi_loc is not None:
-    #     plot_data('svis', 'SVI', svi_loc, 'unique_index', 'svi')
 
 def main():
     args = parse_arguments()
@@ -403,24 +254,6 @@ def main():
     pop_data = load_pop(city)
     population_dict = process_pop(pop_data).to_dict()
 
-    # # Load and process svi data
-    # if (city == 'Beijing') or (city == 'Shanghai'):
-    #     directory = f'/home_nfs/regionteam/SparseRegion/data/raw/svi/{city}/svi_{city.lower()}'
-    # elif (city == 'Hangzhou'):
-    #     directory = f'/home_nfs/regionteam/SparseRegion/data/raw/svi/{city}'
-
-    # images_df = load_image_filenames_and_extract_coordinates(directory)
-
-    # # Transform the coordinates and add them to the DataFrame
-    # images_df['projected_coords'] = images_df.progress_apply(lambda row: transform_coords(row['longitude'], row['latitude'], city), axis=1)
-    # successful_conversions = images_df['projected_coords'].notnull().sum()
-    # print(f"Successfully transformed coordinates for {successful_conversions} images")
-
-    # images_df[['projected_x', 'projected_y']] = pd.DataFrame(images_df['projected_coords'].tolist(), index=images_df.index)
-    # svi_loc = gpd.GeoDataFrame(images_df, geometry=gpd.points_from_xy(images_df.projected_x, images_df.projected_y))
-
-
-    #######
     # Create a KDTree for POIs based on their locations
     poi_tree = cKDTree(poi_loc)
     print('Aggregating poi...')
@@ -444,22 +277,16 @@ def main():
         gdp_tree = None
         print('No GDP data to aggregate')
 
-    # 初始化区域中心点列表
     region_centers = []
     for region in road_regions:
         region_centroid = ((region.bounds[0] + region.bounds[2]) / 2, (region.bounds[1] + region.bounds[3]) / 2)
         region_centers.append(region_centroid)
     
-    # 如果有GDP数据，打印区域坐标范围进行比较
     if gdp_locations:
         region_x_vals = [center[0] for center in region_centers]
         region_y_vals = [center[1] for center in region_centers]
         print(f"Region X coordinate range: {min(region_x_vals)} to {max(region_x_vals)}")
         print(f"Region Y coordinate range: {min(region_y_vals)} to {max(region_y_vals)}")
-
-    # Create a KDTree for SVIs based on their locations
-    # svi_tree = cKDTree(svi_loc[['projected_x', 'projected_y']])
-    # print('Aggregating SVIs...')
 
     count_no_point = 0
 
@@ -507,7 +334,6 @@ def main():
             print(f"Road Region {idx} is still a MultiPolygon.")  
 
 
-    ########### Aggregate landuse_regions into road_regions
     # Create a KDTree for landuse_regions based on their centroids
     landuse_region_centroids = [(region.centroid.x, region.centroid.y) for region in landuse_regions]
     land_tree = cKDTree(landuse_region_centroids)
@@ -556,7 +382,7 @@ def main():
         dx = region.bounds[2] - region.bounds[0]
         dy = region.bounds[3] - region.bounds[1]
         radius = math.sqrt(dx**2 + dy**2) / 2
-        region_centroid = region_centers[idx]  # 使用已经计算好的区域中心点
+        region_centroid = region_centers[idx] 
         
         poi_indices_within_radius = poi_tree.query_ball_point(region_centroid, radius)
         for poi_index in poi_indices_within_radius:
@@ -607,7 +433,6 @@ def main():
                 
                 # Create a GDP grid cell polygon (square centered at the grid point)
                 half_size = gdp_cell_size / 2
-                # 尝试创建一个更大的GDP单元格多边形，以增加匹配的机会
                 gdp_cell = Polygon([
                     (gdp_x - half_size, gdp_y - half_size),
                     (gdp_x + half_size, gdp_y - half_size),
@@ -631,31 +456,16 @@ def main():
                         # Add the proportional GDP value based on the intersection area
                         region_gdp += gdp_value * area_ratio
             
-
-            
-            # 计算区域面积
             region_area = area_dict[idx]
             
             # 计算GDP密度（GDP值除以区域面积），并乘以10^6调整单位到合适的数量级
-            # 将单位从"百万元/平方米"调整为"百万元/平方千米"，乘以10^6
+            # Change the unit from million per square meter to per square kilometer
             gdp_density = (region_gdp / region_area) * 1000000 if region_area > 0 else 0.0
             
             # Save the calculated GDP value and GDP density for the region
             road_region_data[idx]['gdp'] = region_gdp
             road_region_data[idx]['gdp_density'] = gdp_density
-            
-
         
-        # svi_indices_within_radius = svi_tree.query_ball_point(region_centroid, radius)
-        # for svi_index in svi_indices_within_radius:
-        #     svi_point = svi_loc.iloc[svi_index].geometry
-        #     if region.contains(svi_point):
-        #         road_region_data[idx]['svis'].append({
-        #             'unique_index': svi_loc.iloc[svi_index]['unique_index'],  # Use 'index' field for consistency
-        #             'location': (svi_loc.iloc[svi_index].projected_x, svi_loc.iloc[svi_index].projected_y)
-        #         })
-    
-    #####################################################################
     
     # Count the road_regions with no POIs
     count_no_point = sum(len(data['pois']) == 0 for data in road_region_data.values())
@@ -738,38 +548,27 @@ def main():
         else:
             print("No regions have GDP data > 0, can't calculate average.")
 
-    # # Count the road_regions with no SVIs
-    # count_no_svi = sum(len(data['svis']) == 0 for data in road_region_data.values())
-    # print(f"Number of road regions without any SVI: {count_no_svi}")
-
-    # Draw the pics and print the summary of these two data in regions
-    # plot_and_summarize(city, road_regions, road_region_data, poi_loc, svi_loc=None)
 
     ##### Save results into file
     region_data = {}
 
     for idx, data in road_region_data.items():
         pois = data['pois']
-        # svis = data['svis']
         
         if pois:  
             # Save all required info
             region_data[idx] = {
-                'region_shape': road_regions[idx], # Save the shape of the region
-                'pois': [{'index': poi_info.get('index', poi_info.get('poi_index')), 'location': poi_info['location']} for poi_info in pois], # Save the POIs with consistent index field
-                # 'svis': [{'index': svi_info['unique_index'], 'location': svi_info['location']} for svi_info in svis], # Save the SVIs
-                'landuse_level1_distribution': data['label_distribution'], # Save the label distribution
-                'population': population_dict.get(idx, 0), # Save the population of each road region
-                'house_price': data['average_house_price'], # Save the house information
-                'gdp': data['gdp_density'], # Save the calculated GDP density value
+                'region_shape': road_regions[idx],  # Save the shape of the region
+                'pois': [{'index': poi_info.get('index', poi_info.get('poi_index')), 'location': poi_info['location']} for poi_info in pois],  # Save the POIs with consistent index field
+                'landuse_level1_distribution': data['label_distribution'],  # Save the label distribution
+                'population': population_dict.get(idx, 0),  # Save the population of each road region
+                'house_price': data['average_house_price'],  # Save the house information
+                'gdp': data['gdp_density'],  # Save the calculated GDP density value
                 }
     # Search in check_region data and find those regions not in region_data, add those region into region_data
     if poi_mode == 'filtered':
         if dataset == 'Gaode':
-            check_region_path = f'/home/yuanlong001/BanditRegion/data/{dataset}/processed/Integral/{city_abb.upper()}_data.pkl'
-        # elif dataset == 'Meituan':
-        #     check_region_path = f'/home_nfs/regionteam/BanditRegion/data/{dataset}/processed/Integral/{city_abb.upper()}_data.pkl'
-        
+            check_region_path = os.path.join(get_suburban_dir(), 'data', dataset, 'processed', 'Integral', f'{city_abb.upper()}_data.pkl')
         with open(check_region_path, 'rb') as f:
             check_region_data = pkl.load(f)
         
@@ -781,7 +580,7 @@ def main():
         
         # Create index mapping for new POIs (original index to text)
         # Load original POI text data for mapping
-        original_poi_file = f'/home/yuanlong001/BanditRegion/data/{dataset}/projected/{city}/poi.txt'
+        original_poi_file = os.path.join(get_suburban_dir(), 'data', dataset, 'projected', city, 'poi.txt')
         index_to_text_map = {}
         with open(original_poi_file, 'r') as f:
             for line_idx, line in enumerate(f):
