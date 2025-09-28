@@ -3185,35 +3185,6 @@ def main():
                 all_failed_indices.update(mapping_stats['failed_indices'])
     
     
-    # if city in ['Beijing','Shanghai'] and total_mapping_stats['failed_mappings'] > 0:
-    #     print(f"\n=== POI Index Mapping Statistics ===")
-    #     print(f"Total regions: {total_mapping_stats['total_regions']}")
-    #     print(f"Total POIs: {total_mapping_stats['total_pois']}")
-    #     print(f"Failed mapping POIs: {total_mapping_stats['failed_mappings']}")
-    #     print(f"Mapping success rate: {((total_mapping_stats['total_pois'] - total_mapping_stats['failed_mappings']) / total_mapping_stats['total_pois'] * 100):.2f}%")
-        
-    #     print(f"\nFailed index analysis:")
-    #     print(f"Unique failed indices: {len(all_failed_indices)}")
-        
-        
-    #     sample_failed = list(all_failed_indices)[:10]
-    #     print(f"Failed index samples: {sample_failed}")
-        
-
-    #     max_filtered_idx = len(original_to_filtered_mapping) - 1
-    #     out_of_range_count = sum(1 for idx in all_failed_indices if idx > max_filtered_idx)
-    #     print(f"Indices exceeding filtered file range: {out_of_range_count}")
-    #     print(f"POI count in filtered file: {len(original_to_filtered_mapping)}")
-        
-    
-    #     if all_failed_indices:
-    #         min_failed = min(all_failed_indices)
-    #         max_failed = max(all_failed_indices)
-    #         print(f"Failed index range: {min_failed} - {max_failed}")
-        
-    #     print("========================\n")
-    # elif city in ['Beijing','Shanghai']:
-    #     print(f"All {total_mapping_stats['total_pois']} POI indices mapped successfully!")
     
     region_ids = list(subgraphs.keys())
     num_regions = len(region_ids)

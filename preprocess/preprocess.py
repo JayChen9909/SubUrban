@@ -73,7 +73,7 @@ def load_poi(city, poi_mode, version, dataset, top_k, drop):
                     try:
                         poi_index.append(int(fields[-1]))
                     except (ValueError, IndexError) as e:
-                        print(f"警告：无法解析索引，使用None代替。错误: {e}, 行: {line.strip()}")
+                        print(f"Warning: Index parsing failed: {e}, line: {line.strip()}")
                         poi_index.append(None)
                 else:
                     poi_index.append(None)
