@@ -120,7 +120,7 @@ def load_poi_categories(poi_txt):
 
 def create_subgraph_from_region(region_info, large_graph, poi_locations, buffer_value=0, original_to_filtered_mapping=None):
     region_shape = region_info['region_shape']
-    poi_indices = [poi['index'] for poi in region_info['pois']]
+    poi_indices = [poi['index'] if isinstance(poi, dict) else poi for poi in region_info['pois']]
     mapping_stats = {'total_pois': len(poi_indices), 'failed_mappings': 0}
     
     # If mapping is provided, convert original indices to filtered indices
@@ -145,8 +145,27 @@ def create_subgraph_from_region(region_info, large_graph, poi_locations, buffer_
     nodes_to_keep = set(poi_indices)
     if buffer_value > 0:
         buffered_region = region_shape.buffer(buffer_value)
-        poi_locations_adjusted = [(loc[1], loc[0]) for loc in poi_locations]
-        filtered_poi_indices = [i for i, loc in enumerate(poi_locations_adjusted) if buffered_region.contains(Point(loc))]
+        pt = None
+        if hasattr(buffered_region, 'exterior'):
+            pt = list(buffered_region.exterior.coords)[0]
+        elif hasattr(buffered_region, 'geoms') and len(buffered_region.geoms) > 0 and hasattr(buffered_region.geoms[0], 'exterior'):
+            pt = list(buffered_region.geoms[0].exterior.coords)[0]
+        poi_pt = poi_locations[0]
+        swap_needed = False
+        if pt is not None and len(pt) == 2 and len(poi_pt) == 2:
+            if abs(pt[0] - poi_pt[0]) > abs(pt[1] - poi_pt[0]):
+                swap_needed = True
+        def swap_coords(geom):
+            if isinstance(geom, Polygon):
+                return Polygon([(y, x) for x, y in geom.exterior.coords])
+            elif isinstance(geom, MultiPolygon):
+                return MultiPolygon([Polygon([(y, x) for x, y in poly.exterior.coords]) for poly in geom.geoms])
+            else:
+                return geom
+        if swap_needed:
+            buffered_region = swap_coords(buffered_region)
+
+        filtered_poi_indices = [i for i, loc in enumerate(poi_locations) if buffered_region.contains(Point(loc))]
         nodes_to_keep.update(filtered_poi_indices)
     subset = list(nodes_to_keep)
     subset = [node for node in subset if node < large_graph.num_nodes]
@@ -196,6 +215,9 @@ def ret_saturation_reward_dynamic(sg, poi_categories, method='mean'):
     return reward
 
 def evaluate_rf_5fold_single(embeddings, labels, random_state=42):
+    # If not enough samples, return NaN for all metrics
+    if len(labels) < 2:
+        return float('nan'), float('nan'), float('nan')
     labels = np.array(labels)
     
     # First split 8:2 for data
@@ -244,6 +266,16 @@ def evaluate_rf_5fold_single(embeddings, labels, random_state=42):
     return test_r2, test_mae, test_rmse
 
 def evaluate_rf_repeat_5fold(embeddings, labels, repeats=5):
+    # If not enough samples, return NaN for all metrics
+    if len(labels) < 2:
+        return {
+            'r2_mean': float('nan'),
+            'r2_std': float('nan'),
+            'mae_mean': float('nan'),
+            'mae_std': float('nan'),
+            'rmse_mean': float('nan'),
+            'rmse_std': float('nan')
+        }
     r2_list = []
     mae_list = []
     rmse_list = []
@@ -934,12 +966,12 @@ def rl_expand_region_with_dynamic_threshold(sg, region_shape, candidate_buffer, 
 
 def get_llm_analysis(current_summary_path, global_history_path, previous_analyses, llm_type='GPT'):
     if llm_type == 'GPT':
-        api_key = "insert-your-gpt-api-key-here"
+        api_key = "insert-your-api-key"
         base_url = None
         model_name = "gpt-4.1"
     elif llm_type == 'DeepSeek':
         base_url = "https://api.deepseek.com/v1" 
-        api_key = "insert-your-deepseek-api-key-here"
+        api_key = "insert-your-api-key"
         model_name = "deepseek-reasoner" 
     else:
         print("LLM choices are only GPT or DeepSeek.")
@@ -1873,19 +1905,14 @@ def train_rl_rounds_with_single_task_weights(subgraphs, train_ids, region_gnn, p
             region_info['buffer'] = new_buffer
             total_buffer_loss.append((ratio, new_log_prob.mean(), region_id))
             
-            # RL expansion with selected strategy
-            if rnd < early_rounds:
-                expand_fn = rl_expand_region
-                strategy_name = "standard"
-            else:
-                expand_fn = rl_expand_region_with_dynamic_threshold
-                strategy_name = f"dynamic_threshold_{threshold_strategy}"
-            
+            # Always use dynamic strategy for all cities
+            expand_fn = rl_expand_region_with_dynamic_threshold
+            strategy_name = f"dynamic_threshold_{threshold_strategy}"
             expanded_sg, old_region_emb, new_region_emb, log_probs, multihead_loss = expand_fn(
                 sg, region_shape, region_info['buffer'], rl_topk, region_gnn, large_graph,
                 poi_locations, poi_tree, projection_layer, candidate_attention,
                 is_training=True, poi_categories=poi_categories, category_weights=category_weights,
-                threshold_strategy=threshold_strategy if rnd >= early_rounds else None
+                threshold_strategy=threshold_strategy
             )
             
             if region_counter_check == 0:
@@ -2832,7 +2859,7 @@ def test_openai_api(llm_type='GPT'):
     print(f"Testing {llm_type} API connection...")
     try:
         if llm_type == 'GPT':
-            api_key = "your_openai_api_key_here"
+            api_key = "insert-your-api-key"
             client = openai.OpenAI(api_key=api_key)
             response = client.chat.completions.create(
                 model="gpt-4.1",
@@ -2842,7 +2869,7 @@ def test_openai_api(llm_type='GPT'):
             result = response.choices[0].message.content
             print(f"GPT API test successful! Response: {result}")
         elif llm_type == 'DeepSeek':
-            api_key = "your_deepseek_api_key_here"
+            api_key = "insert-your-api-key"
             client = openai.OpenAI(
                 api_key=api_key,
                 base_url="https://api.deepseek.com/v1"
@@ -2864,147 +2891,25 @@ def test_openai_api(llm_type='GPT'):
 def testing_phase_with_single_task_enhanced(subgraphs, test_ids, region_gnn, projection_layer, buffer_controller,
                                            large_graph, poi_locations, poi_tree, poi_categories, norm_mean_tensor, norm_std_tensor, device,
                                            optimized_weights, test_rounds=5, rl_topk=40, candidate_attention=None, city='Singapore', mode='total'):
-    """Testing phase specifically for single-task cities (Singapore/NYC) using population-only evaluation"""
-    print(f"Starting single-task testing for {city} with {len(test_ids)} regions, {test_rounds} rounds, top-{rl_topk} expansion")
-    
-    # Initial evaluation
+    print(f"Starting single-task testing for {city} with {len(test_ids)} regions (overall evaluation mode)")
     initial_pop_r2_weighted = compute_population_r2(subgraphs, test_ids, use_weights=True, 
                                                    category_weights=optimized_weights, poi_categories=poi_categories)
-    
     print("Initial population R² performance (test set):")
-    print(f"  With weights: {initial_pop_r2_weighted:.4f}")
-    
-    # Perform expansion testing
-    expansion_results = []
-    
-    for test_region_id in tqdm(test_ids[:min(100, len(test_ids))], desc="Testing expansion"):
-        subgraph, region_shape, region_info = subgraphs[test_region_id]
-        original_nodes = subgraph.x.shape[0]
-        
-        # Expansion simulation
-        current_subgraph = subgraph
-        current_region_info = region_info.copy()
-        
-        round_results = []
-        
-        for round_idx in range(test_rounds):
-            # Get expansion candidates using same approach as RL functions
-            buffered_poly = current_region_info['region_shape'].buffer(current_region_info['buffer'])
-            prepared_region = prep(buffered_poly)
-            minx, miny, maxx, maxy = buffered_poly.bounds
-            center = [(minx + maxx) / 2, (miny + maxy) / 2]
-            radius = np.sqrt((maxx - minx)**2 + (maxy - miny)**2) / 2
-            candidate_indices = poi_tree.query_ball_point(center, radius)
-            
-            # Filter candidates
-            candidates = []
-            existing_pois = set(current_region_info.get('pois', []))
-            for idx in candidate_indices:
-                if idx in existing_pois:
-                    continue
-                pt = Point(poi_locations[idx][1], poi_locations[idx][0])
-                if prepared_region.contains(pt) and (not current_region_info['region_shape'].contains(pt)):
-                    candidates.append(idx)
-            
-            candidates = candidates[:rl_topk]  # Limit to top k
-            
-            if not candidates:
-                break
-                
-            # Use model to select best candidates
-            if mode == 'total':
-                # Trained model selection
-                region_gnn.eval()
-                with torch.no_grad():
-                    region_embedding = region_gnn(current_subgraph.x, current_subgraph.edge_index)
-                    region_rep = torch.mean(region_embedding, dim=0, keepdim=True)
-                    
-                    # Evaluate candidates
-                    candidate_scores = []
-                    for candidate_idx in candidates:
-                        candidate_embedding = large_graph.x[candidate_idx].unsqueeze(0)
-                        if candidate_attention:
-                            score = candidate_attention(region_rep, candidate_embedding).item()
-                        else:
-                            score = torch.cosine_similarity(region_rep, candidate_embedding).item()
-                        candidate_scores.append((candidate_idx, score))
-                    
-                    # Select top candidates
-                    candidate_scores.sort(key=lambda x: x[1], reverse=True)
-                    selected_candidates = [idx for idx, _ in candidate_scores[:max(1, rl_topk//4)]]
-            else:
-                # Random selection for no_train mode
-                selected_candidates = candidates[:max(1, rl_topk//4)]
-            
-            # Add candidates and update subgraph
-            new_poi_indices = current_region_info.get('pois', []) + selected_candidates
-            current_region_info['pois'] = new_poi_indices
-            
-            # Create updated subgraph
-            mapping = None  # For SG/NYC, no mapping needed
-            updated_subgraph, _ = create_subgraph_from_region(
-                current_region_info, large_graph, poi_locations, buffer_value=0, 
-                original_to_filtered_mapping=mapping
-            )
-            current_subgraph = updated_subgraph
-            
-            # Evaluate round performance
-            temp_subgraphs = {test_region_id: (current_subgraph, region_shape, current_region_info)}
-            round_pop_r2 = compute_population_r2(temp_subgraphs, [test_region_id], use_weights=True,
-                                                category_weights=optimized_weights, poi_categories=poi_categories)
-            
-            round_results.append({
-                'round': round_idx + 1,
-                'nodes_added': len(selected_candidates),
-                'total_nodes': current_subgraph.x.shape[0],
-                'population_r2': round_pop_r2
-            })
-        
-        # Store region expansion results
-        final_pop_r2 = round_results[-1]['population_r2'] if round_results else initial_pop_r2_weighted
-        expansion_results.append({
-            'region_id': test_region_id,
-            'original_nodes': original_nodes,
-            'final_nodes': round_results[-1]['total_nodes'] if round_results else original_nodes,
-            'initial_pop_r2': initial_pop_r2_weighted,
-            'final_pop_r2': final_pop_r2,
-            'improvement': final_pop_r2 - initial_pop_r2_weighted,
-            'rounds_completed': len(round_results)
-        })
-    
-    # Analyze results
-    if expansion_results:
-        avg_initial_r2 = np.mean([r['initial_pop_r2'] for r in expansion_results])
-        avg_final_r2 = np.mean([r['final_pop_r2'] for r in expansion_results])
-        avg_improvement = np.mean([r['improvement'] for r in expansion_results])
-        avg_nodes_added = np.mean([r['final_nodes'] - r['original_nodes'] for r in expansion_results])
-        
-        print(f"\n=== Single-task Testing Results Summary ===")
-        print(f"Regions tested: {len(expansion_results)}")
-        print(f"Average initial population R²: {avg_initial_r2:.4f}")
-        print(f"Average final population R²: {avg_final_r2:.4f}")
-        print(f"Average population R² improvement: {avg_improvement:.4f}")
-        print(f"Average nodes added per region: {avg_nodes_added:.1f}")
-        
-        improvement_pct = (avg_improvement / avg_initial_r2) * 100
-        print(f"Average relative improvement: {improvement_pct:.2f}%")
-        
-        # Distribution analysis
-        positive_improvements = [r for r in expansion_results if r['improvement'] > 0]
-        print(f"Regions with positive improvement: {len(positive_improvements)}/{len(expansion_results)} ({len(positive_improvements)/len(expansion_results)*100:.1f}%)")
-        
-        if positive_improvements:
-            avg_positive_improvement = np.mean([r['improvement'] for r in positive_improvements])
-            print(f"Average improvement (positive only): {avg_positive_improvement:.4f}")
-    
+    print(f"  With weights: {initial_pop_r2_weighted['population_r2']:.4f}")
+
+    print(f"\n=== Single-task Testing Results Summary ===")
+    print(f"Regions tested: {len(test_ids)}")
+    print(f"Population R²: {initial_pop_r2_weighted['population_r2']:.4f} ± {initial_pop_r2_weighted['population_r2_std']:.4f}")
+    print(f"MAE: {initial_pop_r2_weighted['population_mae']:.4f} ± {initial_pop_r2_weighted['population_mae_std']:.4f}")
+    print(f"RMSE: {initial_pop_r2_weighted['population_rmse']:.4f} ± {initial_pop_r2_weighted['population_rmse_std']:.4f}")
     print(f"Single-task testing completed for {city}")
-    return expansion_results
+    return initial_pop_r2_weighted
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--city', type=str, default='Beijing', choices=['Beijing', 'Shanghai','Singapore','NYC'])
-    parser.add_argument('--dataset', type=str, default='Gaode', choices=['Meituan', 'Gaode','OSM'])
+    # parser.add_argument('--dataset', type=str, default='Gaode', choices=['Meituan', 'Gaode','OSM'])
     parser.add_argument('--top_k', type=int, default=8000, help='number of top-k POIs to consider')
     parser.add_argument('--drop', type=str, choices=['BM25', 'random'], default='BM25')
     parser.add_argument('--version', type=str, default='keywords_kmeans')
@@ -3031,7 +2936,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     city = args.city
     city_short = city_abbr(city)
-    dataset = args.dataset
+    # dataset = args.dataset
     top_k = args.top_k
     drop = args.drop
     version = args.version
@@ -3054,7 +2959,11 @@ def main():
     population_weight = args.population_weight
     housing_weight = args.housing_weight
     gdp_weight = args.gdp_weight
-        
+    
+    if city in ['Beijing','Shanghai']:
+        dataset = 'Gaode'
+    elif city in ['Singapore','NYC']:
+        dataset = 'OSM'
     total_start_time = time.time()
 
     total_weight = population_weight + housing_weight + gdp_weight
@@ -3079,7 +2988,7 @@ def main():
     if city in ['Beijing','Shanghai']:
         poi_path = os.path.join(suburban_dir, 'data', dataset, 'projected', city, f'poi_{drop}_{version}_{top_k}.txt')
     elif city in ['Singapore','NYC']:
-        poi_path = os.path.join(suburban_dir, 'data', dataset, 'projected', city, f'poi_{drop}_{version}_{top_k}.txt')
+        poi_path = os.path.join(suburban_dir, 'data', dataset, 'projected', city, f'poi_{version}_filtered.txt')
     poi_embeddings_path = os.path.join(suburban_dir, 'embs', 'BERT', city, f'poi_embeddings_{drop}_{version}.npy')
     poi_embeddings = np.load(poi_embeddings_path)
     
@@ -3089,31 +2998,41 @@ def main():
     print(f'Loaded {poi_embeddings.shape[0]} POIs, each with {poi_embeddings.shape[1]} dimensions')
     
     original_to_filtered_mapping = {}
-    if city in ['Beijing','Shanghai']: 
-        with open(poi_path, 'r') as f:
-            for line_idx, line in enumerate(f):
-                fields = line.strip().split('\t')
-                if len(fields) >= 4:  
-                    original_index = int(fields[-1])  
-                    original_to_filtered_mapping[original_index] = line_idx 
-        print(f'Created {len(original_to_filtered_mapping)} original index to filtered index mappings')
-    else:
-        print('Singapore mode, no index mapping needed')
+    with open(poi_path, 'r') as f:
+        for line_idx, line in enumerate(f):
+            fields = line.strip().split('\t')
+            # For BJ/SH: last field is original index; for SG/NYC: assume first field is original index or fallback to line_idx
+            if len(fields) >= 4:
+                try:
+                    original_index = int(fields[-1])
+                except Exception:
+                    original_index = line_idx
+            elif len(fields) >= 1:
+                try:
+                    original_index = int(fields[0])
+                except Exception:
+                    original_index = line_idx
+            else:
+                original_index = line_idx
+            original_to_filtered_mapping[original_index] = line_idx
+    print(f'Created {len(original_to_filtered_mapping)} original index to filtered index mappings (all cities)')
     
+
     global poi_locations
     poi_locations = np.array(poi_locations_loaded)
-    
-    # Coordinate transformation for Singapore and NYC (swap lat/lon)
+
     if city in ['Singapore', 'NYC']:
-        poi_locations = poi_locations[:, [1, 0]]  # Swap columns: [lat, lon] -> [lon, lat]
-        print(f"Applied coordinate transformation for {city} (swapped lat/lon)")
-    
+        poi_locations = poi_locations[:, [1, 0]]
+        print(f"[SG/NYC] Applied coordinate transformation for {city} (swapped lat/lon)")
+        points_for_tree = np.column_stack((poi_locations[:, 1], poi_locations[:, 0]))
+    else:
+        points_for_tree = np.column_stack((poi_locations[:, 0], poi_locations[:, 1]))
+
     if poi_locations.shape[1] != 2:
         raise ValueError("POI locations must be 2D for Delaunay triangulation")
-    
+
     poi_categories = load_poi_categories(poi_txt)
-    
-    
+
     category_counter = Counter(poi_categories)
     print(f"Total {len(category_counter)} different POI categories")
     print("POI category distribution (Top 10):")
@@ -3132,6 +3051,8 @@ def main():
     else:
         print("LLM instruction banned.")
 
+
+    # --- Build large graph and KDTree ---
     tri = Delaunay(poi_locations)
     edges = set()
     for simplex in tri.simplices:
@@ -3142,8 +3063,7 @@ def main():
     edge_index = torch.tensor(list(edges), dtype=torch.long).t().contiguous().to(device)
     large_graph = Data(x=poi_embeddings, edge_index=edge_index)
     print(f'Created large graph with {large_graph.num_nodes} nodes and {large_graph.num_edges} edges')
-    
-    points_for_tree = np.column_stack((poi_locations[:, 1], poi_locations[:, 0]))
+
     poi_tree = cKDTree(points_for_tree)
     
     if city in ['Beijing','Shanghai']:
@@ -3151,7 +3071,7 @@ def main():
         region_data_path = os.path.join(suburban_dir, 'data', dataset, 'processed', 'Integral', f'{city_short}_data_{drop}_{version}_{top_k}.pkl')
     elif city in ['Singapore','NYC']:
         suburban_dir = get_suburban_dir()
-        region_data_path = os.path.join(suburban_dir, 'data', dataset, 'processed', 'Integral', f'{city_short}_data_{drop}_{version}_{top_k}.pkl')
+        region_data_path = os.path.join(suburban_dir, 'data', dataset, 'processed', 'Integral', f'{city_short}_data_{drop}_{version}.pkl')
     else:
         print("Please choose cities from: Beijing, Shanghai, Singapore, NYC")
     
@@ -3169,22 +3089,50 @@ def main():
     
     for region_id in tqdm(toy_regions, desc="Creating subgraphs"):
         region_info = toy_regions[region_id]
+        # print(f"[DEBUG-MAIN] region_id: {region_id}, region_shape type: {type(region_info['region_shape'])}, pois count: {len(region_info['pois'])}")
         if region_info['pois']:
-            mapping = original_to_filtered_mapping if city in ['Beijing','Shanghai'] else None
-            sg, mapping_stats = create_subgraph_from_region(region_info, large_graph, poi_locations, buffer_value=0, original_to_filtered_mapping=mapping)
+            # Always use mapping for all cities
+            sg, mapping_stats = create_subgraph_from_region(region_info, large_graph, poi_locations, buffer_value=0, original_to_filtered_mapping=original_to_filtered_mapping)
+            # print(f"[DEBUG-MAIN] subgraph x shape: {sg.x.shape if hasattr(sg, 'x') else 'None'}")
             region_info['buffer'] = initial_candidate_buffer
             subgraphs[region_id] = (sg, region_info['region_shape'], region_info)
 
-        
             total_mapping_stats['total_pois'] += mapping_stats['total_pois']
             total_mapping_stats['failed_mappings'] += mapping_stats['failed_mappings']
             total_mapping_stats['total_regions'] += 1
-            
-            
             if 'failed_indices' in mapping_stats:
                 all_failed_indices.update(mapping_stats['failed_indices'])
     
     
+    # if city in ['Beijing','Shanghai'] and total_mapping_stats['failed_mappings'] > 0:
+    #     print(f"\n=== POI Index Mapping Statistics ===")
+    #     print(f"Total regions: {total_mapping_stats['total_regions']}")
+    #     print(f"Total POIs: {total_mapping_stats['total_pois']}")
+    #     print(f"Failed mapping POIs: {total_mapping_stats['failed_mappings']}")
+    #     print(f"Mapping success rate: {((total_mapping_stats['total_pois'] - total_mapping_stats['failed_mappings']) / total_mapping_stats['total_pois'] * 100):.2f}%")
+        
+    #     print(f"\nFailed index analysis:")
+    #     print(f"Unique failed indices: {len(all_failed_indices)}")
+        
+        
+    #     sample_failed = list(all_failed_indices)[:10]
+    #     print(f"Failed index samples: {sample_failed}")
+        
+
+    #     max_filtered_idx = len(original_to_filtered_mapping) - 1
+    #     out_of_range_count = sum(1 for idx in all_failed_indices if idx > max_filtered_idx)
+    #     print(f"Indices exceeding filtered file range: {out_of_range_count}")
+    #     print(f"POI count in filtered file: {len(original_to_filtered_mapping)}")
+        
+    
+    #     if all_failed_indices:
+    #         min_failed = min(all_failed_indices)
+    #         max_failed = max(all_failed_indices)
+    #         print(f"Failed index range: {min_failed} - {max_failed}")
+        
+    #     print("========================\n")
+    # elif city in ['Beijing','Shanghai']:
+    #     print(f"All {total_mapping_stats['total_pois']} POI indices mapped successfully!")
     
     region_ids = list(subgraphs.keys())
     num_regions = len(region_ids)
