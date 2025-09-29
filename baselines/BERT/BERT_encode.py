@@ -17,21 +17,21 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--city', type=str, default='Beijing', help='dataset city name from Beijing, Shanghai, Singapore, NYC')
 parser.add_argument('--mode', type=str, choices=['original','filtered'],default='original')
-parser.add_argument('--dataset', type=str, default='Gaode', choices=['Meituan','Gaode','OSM'], help='dataset name from Gaode, Meituan')
+# parser.add_argument('--dataset', type=str, default='Gaode', choices=['Meituan','Gaode','OSM'], help='dataset name from Gaode, Meituan')
 parser.add_argument('--drop', type=str, choices=['BM25','random'], default='BM25')
 parser.add_argument('--version', type=str, choices=['keywords_kmeans','cat', 'v3','v4', 'v5','all'], default='keywords_kmeans')
 parser.add_argument('--top_k', type=int, default=8000)
-dataset = parser.parse_args().dataset
+# dataset = parser.parse_args().dataset
 mode = parser.parse_args().mode
 city = parser.parse_args().city
 version = parser.parse_args().version
 drop = parser.parse_args().drop
 top_k = parser.parse_args().top_k
 
-# if mode in ['enhanced','mini']:
-#     file_name = f'poi_{mode}.txt'
-# elif mode == 'filtered':
-#     file_name = f'poi_{mode}_v2_mini.txt'
+if city in ['Beijing', 'Shanghai']:
+    dataset = 'Gaode'
+else:
+    dataset = 'OSM'
 if mode == 'original':
     file_name = 'poi.txt'
     # file_name = f'poi_{drop}_{version}_{top_k}.txt'

@@ -8,7 +8,7 @@ WITH LLM-INFORMED REINFORCEMENT LEARNING*
 - With this repository, you can
   - Process urban POI data with automatic keyword generation and filtering
   - Train and Evaluate SubUrban model on urban region prediction tasks (population density prediction, house price prediction, GDP density prediction)
-  - Compare with baselines (update soon)
+  - Compare with baselines (SOTA baselines: CityFM, HGI)
 
 ### Environment Preparation
 
@@ -65,11 +65,13 @@ api_key = 'your-actual-api-key-here'  # Replace with your OpenAI or DeepSeek API
 
 ```
 SubUrban/
-├── baselines/          # Baseline methods including BERT encoding
-│   └── BERT/
-├── data/              # Dataset storage (Beijing, Shanghai)
-│   ├── Gaode/
-│   │   └── projected/
+├── baselines/          # Baseline methods for comparison
+│   ├── BERT/
+│   ├── CityFM/
+│   └── HGI/
+├── data/              # Data storage
+│   ├── Gaode/         # For Beijing and Shanghai
+│   └── OSM/           # For Singapore and NYC
 ├── embs/              # Generated embeddings storage
 ├── model/             # Main SubUrban model implementation
 │   └── SubUrban_model.py
@@ -77,8 +79,10 @@ SubUrban/
 │   ├── preprocess.py
 │   ├── GPT_get_keywords.py
 │   └── BM25_filtering_keywordKmeans.py
-├── scripts/           # Execution scripts
-│   └── run_SubUrban.sh
+├── scripts/           # Execute the piplines of SubUrban and SOTA baselines
+│   ├── run_SubUrban.sh
+│   ├── run_CityFM.sh
+│   └── run_HGI.sh
 └── tmp/               # Temporary files during processing
 ```
 
