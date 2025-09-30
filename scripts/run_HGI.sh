@@ -50,7 +50,7 @@ fi
 # Step 5: Train HGI model
 echo "Step 5: Training HGI model..."
 CITY_LOWER=$(echo "$CITY" | awk '{print tolower($0)}')
-CUDA_VISIBLE_DEVICES=5 python baselines/HGI/train.py --city "$CITY_LOWER" --epoch 1
+CUDA_VISIBLE_DEVICES=5 python baselines/HGI/train.py --city "$CITY_LOWER"
 if [ $? -ne 0 ]; then
 	echo "Error: HGI training failed"
 	exit 1
