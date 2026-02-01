@@ -40,26 +40,22 @@ pip install -r requirements.txt
 
 ### API Key Configuration
 
-**Important**: This project uses LLM APIs for keyword generation and model operations. You need to configure your API key before running the pipeline.
-
-The following scripts require API key configuration:
-- `SubUrban_model.py` (main model with LLM integration)
-- `GPT_get_keywords.py` (GPT-based keyword generation)
+**Important**: This project uses LLM APIs for keyword generation and model operations. API keys are read from environment variables.
 
 **Setup Instructions**:
-1. Open the respective script files
-2. Locate the variable named `api_key`
-3. Replace the placeholder with your actual API key from OpenAI or DeepSeek platform
+1. Export your API key in the shell before running any script:
 
-Example:
-```python
-# In SubUrban_model.py and GPT_get_keywords.py
-api_key = 'your-actual-api-key-here'  # Replace with your OpenAI or DeepSeek API key
+```bash
+export OPENAI_API_KEY="your-openai-api-key"
 ```
 
-**Supported Platforms**:
-- OpenAI
-- DeepSeek
+If you use DeepSeek for LLM guidance, also export:
+
+```bash
+export DEEPSEEK_API_KEY="your-deepseek-api-key"
+```
+
+After exporting, all scripts will automatically read the key from the environment. You do **not** need to edit any `.sh` file.
 
 ## Project Structure
 
@@ -72,7 +68,7 @@ SubUrban/
 ├── data/              # Data storage
 │   ├── Gaode/         # For Beijing and Shanghai
 │   └── OSM/           # For Singapore and NYC
-├── embs/              # Generated embeddings storage
+├── embs/              # Generated embeddings storage (created at runtime)
 ├── model/             # Main SubUrban model implementation
 │   └── SubUrban_model.py
 ├── preprocess/        # Data preprocessing pipeline
@@ -83,7 +79,23 @@ SubUrban/
 │   ├── run_SubUrban.sh
 │   ├── run_CityFM.sh
 │   └── run_HGI.sh
-└── tmp/               # Temporary files during processing
+└── tmp/               # Temporary files during processing (created at runtime)
+```
+
+### Singapore GDP Data (Optional, Large File)
+
+The Singapore GDP raster (2019GDP.tif) is an estimated dataset derived from nighttime-light calibrated economic activity (not official statistics).  
+It is large and not included in this repository.  
+If you need the Singapore GDP task, download it from:
+
+```
+https://zenodo.org/records/16741980
+```
+
+Place the file at:
+
+```
+SubUrban/data/Gaode/raw/GDP/2019GDP.tif
 ```
 
 ### Data Processing Pipeline

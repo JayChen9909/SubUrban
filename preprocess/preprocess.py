@@ -17,6 +17,13 @@ from scipy.spatial import cKDTree
 from shapely.geometry import MultiPolygon, Point, Polygon
 from shapely.ops import transform
 
+try:
+    import rasterio
+    from rasterio.mask import mask
+except ImportError:
+    rasterio = None
+    mask = None
+
 def get_suburban_dir():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.dirname(script_dir)
@@ -257,12 +264,13 @@ def load_and_project_subzones(city, region_file):
 
         subzones = {}
         for region_id, data in regions.items():
-            # Convert polygon to UTM coordinates
-            polygon = transform(project, Polygon(data['polygon']))
+            polygon_wgs84 = Polygon(data['polygon'])
+            polygon = transform(project, polygon_wgs84)
             subzones[int(region_id)] = {
                 'geometry': polygon,
                 'area': data['area'],
-                'population': data['population']
+                'population': data['population'],
+                'geometry_wgs84': polygon_wgs84
             }
         print(f"Loaded and projected {len(subzones)} Singapore subzones from {region_file}")
         return subzones
@@ -400,11 +408,11 @@ def scan_pois_in_subzones(poi_loc, poi_index, subzones, poi_mode='original'):
         for poi_idx in poi_indices_within_radius:
             poi_point = Point(poi_loc[poi_idx])
             if polygon.contains(poi_point):
-                # 强化index mapping逻辑：SG/NYC filtered模式下，index字段始终为原始index
                 if poi_mode == 'filtered':
                     region_data[subzone_id]['pois'].append({
-                        'index': poi_index[poi_idx],  # 原始index
-                        'location': poi_loc[poi_idx]
+                        'index': poi_index[poi_idx],
+                        'location': poi_loc[poi_idx],
+                        'original_index': poi_index[poi_idx]
                     })
                 else:
                     region_data[subzone_id]['pois'].append({
@@ -431,7 +439,7 @@ def align_with_original_data(city, filtered_region_data, subzones, filtered_file
     elif city == 'NYC':
         city_abbr = 'NYC'
     
-    original_pkl_path = f'/home/yuanlong001/BanditRegion/data/{dataset}/processed/Integral/{city_abbr}_data.pkl'
+    original_pkl_path = os.path.join(get_suburban_dir(), 'data', dataset, 'processed', 'Integral', f'{city_abbr}_data.pkl')
     
     try:
         with open(original_pkl_path, 'rb') as f:
@@ -467,7 +475,6 @@ def align_with_original_data(city, filtered_region_data, subzones, filtered_file
     for subzone_id, original_data in original_region_data.items():
         if subzone_id in filtered_region_data:
             if len(filtered_region_data[subzone_id]['pois']) == 0 and len(original_data['pois']) > 0:
-                # 补齐region时，index字段也用原始index，保持和BJ/SH一致
                 for poi_info in original_data['pois']:
                     poi_location = tuple(poi_info['location'])
                     if poi_location not in current_poi_set:
@@ -503,6 +510,66 @@ def align_with_original_data(city, filtered_region_data, subzones, filtered_file
     }
     
     return filtered_region_data, alignment_stats
+
+def add_gdp_from_raster(city, subzones, gdp_tif_path):
+    if city != 'Singapore':
+        return subzones
+    if not gdp_tif_path:
+        print("No gdp_tif_path provided, skip GDP aggregation.")
+        return subzones
+    if rasterio is None or mask is None:
+        print("rasterio is not available, skip GDP aggregation.")
+        return subzones
+    if not os.path.exists(gdp_tif_path):
+        print(f"GDP raster not found at {gdp_tif_path}, skip GDP aggregation.")
+        return subzones
+
+    print(f"Loading GDP raster from: {gdp_tif_path}")
+    with rasterio.open(gdp_tif_path) as src:
+        raster_crs = src.crs
+        raster_nodata = src.nodata
+
+        wgs84 = pyproj.CRS("EPSG:4326")
+        transformer = pyproj.Transformer.from_crs(wgs84, raster_crs, always_xy=True)
+
+        for region_id, data in tqdm(subzones.items(), desc="Aggregating GDP for subzones"):
+            poly_wgs84 = data.get('geometry_wgs84')
+            if poly_wgs84 is None:
+                data['gdp_2019_sum'] = 0.0
+                data['gdp_2019_mean'] = 0.0
+                continue
+
+            poly_raster = transform(transformer.transform, poly_wgs84)
+            if poly_raster.is_empty or not poly_raster.is_valid:
+                data['gdp_2019_sum'] = 0.0
+                data['gdp_2019_mean'] = 0.0
+                continue
+
+            geom_geojson = [poly_raster.__geo_interface__]
+            try:
+                out_image, _ = mask(src, geom_geojson, crop=True)
+                band = out_image[0]
+                if raster_nodata is not None:
+                    valid = band[band != raster_nodata]
+                else:
+                    valid = band[~np.isnan(band)]
+
+                if valid.size == 0:
+                    gdp_sum = 0.0
+                    gdp_mean = 0.0
+                else:
+                    gdp_sum = float(valid.sum())
+                    gdp_mean = float(valid.mean())
+
+                data['gdp_2019_sum'] = gdp_sum
+                data['gdp_2019_mean'] = gdp_mean
+            except Exception as e:
+                print(f"Error aggregating GDP for region {region_id}: {e}")
+                data['gdp_2019_sum'] = 0.0
+                data['gdp_2019_mean'] = 0.0
+
+    print("GDP aggregation finished.")
+    return subzones
 
 def abbreviation(city):
     if city == 'Beijing':
@@ -553,6 +620,9 @@ def main():
         # Load and project subzones
         subzones = load_and_project_subzones(city, region_file)
 
+        gdp_tif_path = os.path.join(suburban_dir, 'data', 'Gaode', 'raw', 'GDP', '2019GDP.tif')
+        subzones = add_gdp_from_raster(city, subzones, gdp_tif_path)
+
         # Scan POIs and assign to subzones
         region_data = scan_pois_in_subzones(poi_loc, poi_ori_index, subzones, poi_mode)
 
@@ -571,11 +641,14 @@ def main():
         final_region_data = {}
         for region_id, data in region_data.items():
             if data['pois']:  # Only save regions with POIs
-                # 保证SG/NYC filtered模式下index字段为原始index
+                gdp_sum = subzones.get(region_id, {}).get('gdp_2019_sum', 0.0)
+                gdp_mean = subzones.get(region_id, {}).get('gdp_2019_mean', 0.0)
                 final_region_data[region_id] = {
                     'region_shape': data['region_shape'],
                     'pois': [{'index': poi_info['index'], 'location': poi_info['location']} for poi_info in data['pois']],
-                    'population': data['population']
+                    'population': data['population'],
+                    'gdp_2019_sum': gdp_sum,
+                    'gdp_2019_mean': gdp_mean
                 }
         with open(save_path, 'wb') as f:
             pkl.dump(final_region_data, f)

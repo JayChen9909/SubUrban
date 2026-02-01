@@ -23,7 +23,8 @@ if not os.path.isdir(hp.c + '/Model'):
 cd = CityData(hp.c)
 voc = build_category_vocab(cd.entities)
 n_polylines = len(set(cd.data.keys()))
-model = SSModel(hp.c, config.lm, 768).cuda()
+# model = SSModel(hp.c, config.lm, 768).cuda()
+model = SSModel(hp.c, config.lm, 512).cuda()
 
 train_SS_im(cd, model)
 # model = read_model(hp.c)

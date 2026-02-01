@@ -10,6 +10,7 @@ fi
 
 CITY=$1
 echo "Starting SubUrban pipeline for city: $CITY"
+echo "Note: City must be an English name (Beijing, Shanghai, NYC, Singapore) for CityFM preprocessing."
 
 # Change to the SubUrban directory
 cd "$(dirname "$0")/.." || exit 1
@@ -19,7 +20,7 @@ echo "Working directory: $(pwd)"
 echo "Step 1: Preprocessing and Pretraining..."
 pushd baselines/CityFM > /dev/null
 python CityFM_preprocess.py -c "$CITY"
-CUDA_VISIBLE_DEVICES=5 python CityFM_pretrain.py -c "$CITY"
+CUDA_VISIBLE_DEVICES=5 python CityFM_train.py -c "$CITY"
 if [ $? -ne 0 ]; then
     echo "Error: Preprocessing or Pretraining failed"
     popd > /dev/null
@@ -58,4 +59,3 @@ if [ $? -ne 0 ]; then
     echo "Error: CityFM prediction failed"
     exit 1
 fi
-

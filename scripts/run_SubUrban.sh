@@ -10,6 +10,13 @@ fi
 
 CITY=$1
 echo "Starting SubUrban pipeline for city: $CITY"
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+if [ -z "$OPENAI_API_KEY" ]; then
+    echo "Error: OPENAI_API_KEY is not set. Edit this script or export it before running."
+    exit 1
+fi
+export OPENAI_API_KEY
+# If you plan to use DeepSeek, also export DEEPSEEK_API_KEY before running.
 
 # Change to the SubUrban directory
 cd "$(dirname "$0")/.." || exit 1
@@ -47,7 +54,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-CUDA_VISIBLE_DEVICES=5 python ./baselines/BERT/BERT_encode.py --city "$CITY" --mode filtered
+CUDA_VISIBLE_DEVICES=3 python ./baselines/BERT/BERT_encode.py --city "$CITY" --mode filtered
 if [ $? -ne 0 ]; then
     echo "Error: Re-encode failed"
     exit 1
@@ -55,7 +62,7 @@ fi
 
 # Step 5: Run SubUrban model
 echo "Step 5: Running SubUrban model..."
-CUDA_VISIBLE_DEVICES=5 python ./model/SubUrban_model_allCity.py --city "$CITY"
+CUDA_VISIBLE_DEVICES=3 python ./model/SubUrban_model.py --city "$CITY" 
 if [ $? -ne 0 ]; then
     echo "Error: SubUrban model failed"
     exit 1

@@ -25,7 +25,7 @@ fi
 
 # Step 2: BERT encode for HGI
 echo "Step 2: BERT encoding for HGI..."
-CUDA_VISIBLE_DEVICES=5 python baselines/BERT/BERT_encode.py --city "$CITY"
+CUDA_VISIBLE_DEVICES=6 python baselines/BERT/BERT_encode.py --city "$CITY"
 if [ $? -ne 0 ]; then
 	echo "Error: BERT encoding failed"
 	exit 1
@@ -50,7 +50,7 @@ fi
 # Step 5: Train HGI model
 echo "Step 5: Training HGI model..."
 CITY_LOWER=$(echo "$CITY" | awk '{print tolower($0)}')
-CUDA_VISIBLE_DEVICES=5 python baselines/HGI/train.py --city "$CITY_LOWER"
+CUDA_VISIBLE_DEVICES=7 python baselines/HGI/train.py --city "$CITY_LOWER" --dim 768
 if [ $? -ne 0 ]; then
 	echo "Error: HGI training failed"
 	exit 1

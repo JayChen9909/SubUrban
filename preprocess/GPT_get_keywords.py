@@ -204,7 +204,6 @@ class UnifiedKeywordGenerator:
             template = self.templates[self.template_type]["english"]
             city_name = self.city_config["name"]
         
-        # 强制NYC所有prompt中都用NYC
         if city_name == "NYC":
             city_name = "NYC"
         prompt_template = GenerationTemplate(template)
@@ -333,7 +332,6 @@ Provide exactly 10 keywords per {district_type[:-1] if district_type.endswith('s
         suburban_dir = get_suburban_dir()
         dataset = self.city_config["dataset"]
         city_name = self.city_config["name"]
-        # 强制NYC输出路径和文件夹名都用NYC
         if city_name == "NYC":
             city_name = "NYC"
         file_path = os.path.join(suburban_dir, 'data', dataset, 'projected', city_name, f'district_desc_{self.template_type}.txt')
@@ -483,7 +481,7 @@ Examples:
     parser.add_argument(
         '--api-key',
         type=str,
-        default="insert-your-api-key",
+        default=None,
         help="OpenAI API key"
     )
     
@@ -518,6 +516,11 @@ Examples:
     if args.dataset:
         city_config["dataset"] = args.dataset
     
+    api_key = args.api_key or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("Error: OPENAI_API_KEY is not set. Set it in the environment or pass --api-key.")
+        return 1
+
     # Display configuration
     print(f"City: {city_config['name']}")
     print(f"Districts: {len(city_config['districts'])}")
@@ -535,7 +538,7 @@ Examples:
     
     # Generate keywords
     generator = UnifiedKeywordGenerator(
-        api_key=args.api_key,
+        api_key=api_key,
         city_config=city_config,
         template_type=args.template,
         batch_size=args.batch_size
