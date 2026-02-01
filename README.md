@@ -127,4 +127,20 @@ cd scripts/
 ./run_SubUrban.sh Shanghai
 ```
 
+### Running SOTA Baselines (CityFM, HGI)
+
+We provide runnable scripts for the two baseline methods:
+
+```bash
+cd scripts/
+./run_CityFM.sh Beijing
+```
+
+```bash
+cd scripts/
+./run_HGI.sh Beijing
+```
+
+You can replace `Beijing` with `Shanghai`, `Singapore`, or `NYC` as needed.
+
 ## Thanks for reading!
