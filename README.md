@@ -143,4 +143,11 @@ cd scripts/
 
 You can replace `Beijing` with `Shanghai`, `Singapore`, or `NYC` as needed.
 
+**Note**: Both baselines require the preprocessed region data files `*_data.pkl` under `data/*/processed/Integral/`.  
+You can generate these by running the SubUrban preprocessing step:
+
+```bash
+python preprocess/preprocess.py --city Beijing
+```
+
 ## Thanks for reading!
