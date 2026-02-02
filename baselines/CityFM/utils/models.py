@@ -5,7 +5,9 @@ import torch.nn.functional as F
 from transformers import DistilBertModel, RobertaModel
 from transformers.models.bert.modeling_bert import BertModel
 from transformers import BertTokenizer, DistilBertTokenizer, RobertaTokenizer
-from transformers import AdamW, get_linear_schedule_with_warmup
+# from transformers import AdamW, get_linear_schedule_with_warmup
+from torch.optim import AdamW
+from transformers import get_linear_schedule_with_warmup
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModel
 
 import config
