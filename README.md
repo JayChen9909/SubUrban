@@ -82,6 +82,21 @@ SubUrban/
 └── tmp/               # Temporary files during processing (created at runtime)
 ```
 
+## Data Sources
+
+The experiments in this repository use publicly available urban datasets from multiple sources.
+
+| Data Type | Source | Coverage | Access |
+|---|---|---|---|
+| POI datasets | Gaode Map API | Beijing, Shanghai | https://lbs.amap.com/ |
+| POI datasets | OpenStreetMap | Singapore, NYC | https://download.geofabrik.de/ |
+| Region partitions | GADM | Beijing, Shanghai | https://gadm.org |
+| Region partitions | OpenStreetMap Overpass API | Singapore | https://overpass-api.de/ |
+| Region partitions | NYC Planning | NYC | https://www.nyc.gov/planning |
+| Population density | WorldPop | Global | https://hub.worldpop.org |
+| House prices | Beike | China | https://ke.com |
+| GDP data | RESDP | China | https://doi.org/10.12078/2017121102 |
+
 ### Singapore GDP Data (Optional, Large File)
 
 The Singapore GDP raster (2019GDP.tif) is an estimated dataset derived from nighttime-light calibrated economic activity (not official statistics).  
