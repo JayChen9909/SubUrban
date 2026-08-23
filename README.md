@@ -1,7 +1,6 @@
 # SubUrban
 
-- This is the official repository of the submitted paper: *Learning Autonomous Urban Region Representations through
-LLM-Informed Reinforcement Optimization*
+- This is the official repository of the submitted paper: *Adaptive Urban Region Representation with Submodular-Aware Reinforcement Learning*
 
 ## Quick Start
 
